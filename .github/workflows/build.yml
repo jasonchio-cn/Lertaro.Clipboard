@@ -1,0 +1,30 @@
+name: 构建与测试
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: 准备官方 SDK
+        shell: pwsh
+        run: ./Prepare-Sdk.ps1
+      - name: 构建、测试与打包
+        shell: pwsh
+        run: ./Package.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Lertaro-Clipboard
+          path: |
+            artifacts/Lertaro-Clipboard-*.zip
+            artifacts/Lertaro-Clipboard-*.zip.sha256
+          if-no-files-found: error

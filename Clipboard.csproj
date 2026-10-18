@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Lertaro.Plugins.Clipboard</AssemblyName>
+    <Version>0.3.1</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Clipboard.Tests" />
+    <InternalsVisibleTo Include="Clipboard.Harness" />
+    <Reference Include="Lertaro.PluginSdk"><HintPath>$(LertaroDir)\Lertaro.PluginSdk.dll</HintPath><Private>false</Private></Reference>
+    <Compile Remove="Tests\**;Harness\**;.local\**;artifacts\**" />
+    <Page Remove="Tests\**;Harness\**;.local\**;artifacts\**" />
+    <EmbeddedResource Include="Resources\Translations\**\*.json" />
+    <AssemblyMetadata Include="Lertaro.Plugin.Name" Value="剪贴板历史" />
+    <AssemblyMetadata Include="Lertaro.Plugin.Description" Value="文本、图片和文件历史；搜索、预览和按复制顺序粘贴" />
+  </ItemGroup>
+</Project>

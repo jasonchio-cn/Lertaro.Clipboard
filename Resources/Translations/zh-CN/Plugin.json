@@ -1,0 +1,12 @@
+{
+  "Clip_Keyword": "搜索入口关键词",
+  "Clip_OpenHotkey": "打开剪贴板历史（全局快捷键）",
+  "Clip_NextHotkey": "按复制顺序粘贴下一条（全局快捷键）",
+  "Clip_MaxItems": "最多历史条数（1–10000）",
+  "Clip_Days": "保留天数（1–3650）",
+  "Clip_TotalMB": "历史内容总容量 MB（16–2048）",
+  "Clip_ImageMB": "图片容量 MB（1–2048）",
+  "Clip_ItemMB": "单条内容上限 MB（1–64）",
+  "Clip_Reset": "重置顺序粘贴，从现在开始收集新一批",
+  "Clip_Clear": "清空全部历史…"
+}

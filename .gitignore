@@ -1,0 +1,14 @@
+bin/
+obj/
+**/bin/
+**/obj/
+TestResults/
+.local/
+Local.props
+artifacts/
+SHA256.txt
+*.trx
+*.user
+*.suo
+.vs/
+.idea/

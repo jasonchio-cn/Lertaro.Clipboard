@@ -1,0 +1,12 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)Local.props" Condition="Exists('$(MSBuildThisFileDirectory)Local.props')" />
+  <PropertyGroup>
+    <LertaroDir Condition="'$(LertaroDir)' == '' and '$(LERTARO_DIR)' != ''">$(LERTARO_DIR)</LertaroDir>
+    <LertaroDir Condition="'$(LertaroDir)' == ''">$(MSBuildThisFileDirectory).local\sdk</LertaroDir>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <Target Name="ValidateLertaroSdk" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(LertaroDir)\Lertaro.PluginSdk.dll')"
+           Text="Lertaro.PluginSdk.dll was not found. Run Prepare-Sdk.ps1 or supply -p:LertaroDir=your-Lertaro-directory." />
+  </Target>
+</Project>

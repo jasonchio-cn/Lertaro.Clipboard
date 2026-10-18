@@ -1,0 +1,140 @@
+<UserControl x:Class="Lertaro.Plugins.Clipboard.ClipboardPanel"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:Lertaro.Plugins.Clipboard"
+ FontFamily="Microsoft YaHei UI" FontSize="13" Foreground="{DynamicResource TextPrimary}">
+ <UserControl.Resources>
+  <Style x:Key="PanelButton" TargetType="Button">
+   <Setter Property="Background" Value="{DynamicResource CardBackground}"/>
+   <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+   <Setter Property="Padding" Value="16,9"/>
+   <Setter Property="BorderBrush" Value="{DynamicResource SeparatorBrush}"/>
+   <Setter Property="BorderThickness" Value="1"/>
+   <Setter Property="Cursor" Value="Hand"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border x:Name="Surface" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+     <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.8"/></Trigger>
+     <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Surface" Property="Opacity" Value="0.4"/></Trigger>
+     <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource AccentBlue}"/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style x:Key="TypeTab" TargetType="RadioButton">
+   <Setter Property="Padding" Value="13,9"/><Setter Property="Margin" Value="0,0,7,0"/>
+   <Setter Property="Cursor" Value="Hand"/><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+    <Border x:Name="TabSurface" Background="Transparent" CornerRadius="8" BorderThickness="1" BorderBrush="Transparent">
+     <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="TabSurface" Property="Background" Value="{DynamicResource ItemHover}"/></Trigger>
+     <Trigger Property="IsChecked" Value="True">
+      <Setter TargetName="TabSurface" Property="Background" Value="{DynamicResource ItemSelected}"/>
+      <Setter Property="Foreground" Value="{DynamicResource AccentBlue}"/><Setter Property="FontWeight" Value="SemiBold"/>
+     </Trigger>
+     <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="TabSurface" Property="BorderBrush" Value="{DynamicResource AccentBlue}"/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="ListBoxItem">
+   <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+   <Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0,0,0,5"/>
+   <Setter Property="Cursor" Value="Hand"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+    <Border x:Name="RowSurface" Background="Transparent" BorderThickness="1" BorderBrush="Transparent" CornerRadius="9" Padding="11,12">
+     <ContentPresenter/>
+    </Border>
+    <ControlTemplate.Triggers>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="RowSurface" Property="Background" Value="{DynamicResource ItemHover}"/></Trigger>
+     <Trigger Property="IsSelected" Value="True">
+      <Setter TargetName="RowSurface" Property="Background" Value="{DynamicResource ItemSelected}"/>
+      <Setter TargetName="RowSurface" Property="BorderBrush" Value="{DynamicResource AccentBlue}"/>
+     </Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+   <EventSetter Event="PreviewMouseRightButtonDown" Handler="SelectRightClickedRow"/>
+  </Style>
+  <DataTemplate DataType="{x:Type local:ClipboardRow}">
+   <Grid>
+    <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Border Width="36" Height="36" CornerRadius="8" Background="{DynamicResource CardBackground}" HorizontalAlignment="Left" VerticalAlignment="Center" ClipToBounds="True">
+     <Grid>
+      <TextBlock Text="{Binding Glyph}" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="19" Foreground="{DynamicResource AccentBlue}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"/>
+     </Grid>
+    </Border>
+    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+     <TextBlock Text="{Binding Title}" FontWeight="Medium" TextTrimming="CharacterEllipsis" FontSize="13" Foreground="{DynamicResource TextPrimary}"/>
+     <TextBlock Text="{Binding Subtitle}" Margin="0,6,0,0" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextSecondary}"/>
+    </StackPanel>
+   </Grid>
+  </DataTemplate>
+ </UserControl.Resources>
+ <Grid>
+  <Grid.RowDefinitions>
+   <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+   <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+  </Grid.RowDefinitions>
+  <Grid Margin="0,0,0,20">
+   <StackPanel><TextBlock Text="剪贴板" FontSize="25" FontWeight="SemiBold"/>
+    <TextBlock Text="找回刚才复制的内容" Foreground="{DynamicResource TextSecondary}" Margin="0,5,0,0" FontSize="12"/>
+   </StackPanel>
+   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+    <Button x:Name="ResetButton" Content="重置顺序粘贴" Style="{StaticResource PanelButton}" ToolTip="清除当前队列，从现在开始收集新的一批" Click="ResetClick"/>
+    <Button Content="清空…" Style="{StaticResource PanelButton}" Margin="8,0,0,0" Click="ClearClick"/>
+   </StackPanel>
+  </Grid>
+  <Border Grid.Row="1" CornerRadius="10" BorderThickness="1" BorderBrush="{DynamicResource ControlBorderBrush}" Background="{DynamicResource CardBackground}" Padding="13,11" Margin="0,0,0,12">
+   <Grid>
+    <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" VerticalAlignment="Center" FontSize="16" Foreground="{DynamicResource TextSecondary}"/>
+    <TextBox x:Name="SearchBox" Grid.Column="1" BorderThickness="0" Background="Transparent" Foreground="{DynamicResource TextPrimary}" CaretBrush="{DynamicResource TextPrimary}" FontSize="14" Padding="0" TextChanged="SearchChanged" AutomationProperties.Name="搜索剪贴板内容或来源应用"/>
+    <TextBlock Grid.Column="1" Text="搜索内容或来源应用…" Foreground="{DynamicResource TextSecondary}" IsHitTestVisible="False" FontSize="14">
+     <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding Text, ElementName=SearchBox}" Value=""><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+    </TextBlock>
+    <TextBlock Grid.Column="2" Text="Ctrl F" Foreground="{DynamicResource TextSecondary}" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center"/>
+   </Grid>
+  </Border>
+  <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="0,0,0,16">
+   <StackPanel x:Name="TypeTabs" Orientation="Horizontal"/>
+  </ScrollViewer>
+  <Grid Grid.Row="3">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="0.43*" MinWidth="290"/><ColumnDefinition Width="18"/><ColumnDefinition Width="0.57*" MinWidth="320"/></Grid.ColumnDefinitions>
+   <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <TextBlock x:Name="ListHeading" Text="最近复制" Foreground="{DynamicResource TextSecondary}" FontSize="11"/>
+    <ListBox x:Name="HistoryList" Grid.Row="1" Background="Transparent" BorderThickness="0" Padding="0,0,3,0"
+       ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+       VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+       SelectionChanged="SelectionChanged" MouseDoubleClick="PasteDoubleClick" ContextMenuOpening="OpenRowMenu" AutomationProperties.Name="剪贴板历史记录"/>
+    <StackPanel x:Name="EmptyList" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+     <TextBlock Text="&#xE8A5;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="32" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Center" Margin="0,0,0,14"/>
+     <TextBlock Text="没有匹配的记录" HorizontalAlignment="Center"/>
+     <TextBlock Text="试试其他类型，或换个关键词" Foreground="{DynamicResource TextSecondary}" FontSize="11" Margin="0,8,0,0"/>
+    </StackPanel>
+   </Grid>
+   <Grid Grid.Column="2">
+    <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <TextBlock Text="内容预览" Foreground="{DynamicResource TextSecondary}" FontSize="11"/>
+    <Border Grid.Row="1" CornerRadius="10" Background="{DynamicResource CardBackground}" BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1" ClipToBounds="True">
+     <ContentControl x:Name="PreviewHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
+    </Border>
+   </Grid>
+  </Grid>
+  <Border Grid.Row="4" BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0" Margin="0,16,0,0" Padding="0,13,0,0">
+   <Grid>
+    <StackPanel VerticalAlignment="Center"><TextBlock x:Name="RecordStatus" Text="选择一条记录" FontSize="11" Foreground="{DynamicResource TextSecondary}"/>
+     <TextBlock Text="↑ ↓ 选择   ·   ← → 切换类型   ·   Esc 关闭" FontSize="10" Foreground="{DynamicResource TextSecondary}" Margin="0,5,0,0"/>
+    </StackPanel>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+     <Button x:Name="DeleteButton" Content="删除" Style="{StaticResource PanelButton}" Click="DeleteClick"/>
+     <Button x:Name="CopyButton" Content="仅复制" Style="{StaticResource PanelButton}" Margin="8,0,0,0" Click="CopyClick"/>
+     <Button x:Name="PasteButton" Content="粘贴到原窗口  ↵" Style="{StaticResource PanelButton}" Background="{DynamicResource AccentBlue}" Foreground="White" Margin="8,0,0,0" BorderThickness="0" Click="PasteClick"/>
+    </StackPanel>
+   </Grid>
+  </Border>
+ </Grid>
+</UserControl>
