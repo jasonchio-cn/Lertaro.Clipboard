@@ -18,7 +18,11 @@ internal sealed class ClipboardRuntime
     private readonly object _gate = new();
     private readonly object _workerGate = new();
     private readonly PasteSequence _sequence = new();
+    private readonly ComponentRuntime _lifecycle;
+    private readonly List<Task> _operations = [];
     private Task _work = Task.CompletedTask;
+    private TaskCompletionSource? _monitorStarted, _monitorStopped;
+    private bool _acceptWork;
     private HistoryStore? _store;
     private Dispatcher? _dispatcher;
     private HwndSource? _window;
@@ -28,15 +32,19 @@ internal sealed class ClipboardRuntime
     private Native.WinEventProc? _foregroundCallback;
     private IntPtr _target;
     private uint _seenSequence, _selfSequence;
-    private DispatcherTimer? _retryTimer, _settingsTimer;
+    private DispatcherTimer? _retryTimer;
     private int _readAttempts;
     private bool _busy;
     private volatile bool _stopping;
+    private volatile bool _monitorStopping = true;
     private Exception? _persistenceError;
     private string _hotkeySignature = "";
     private string _startupError = "正在加载历史…";
     internal volatile bool Ready;
     internal HistoryStore? Store => _store;
+    internal IntPtr ListenerHandle => _window?.Handle ?? IntPtr.Zero;
+    internal bool HasMonitorResources => _window != null || _foregroundHook != IntPtr.Zero;
+    internal int PendingCopies { get { lock (_gate) return _sequence.PendingCount; } }
     internal string Status => _startupError;
     internal string Keyword => Setting("Keyword", "clip").Trim() is { Length: > 0 } k ? k : "clip";
     internal T Setting<T>(string key, T fallback) => PluginSettingsService.GetSetting(PluginId, key, fallback);
@@ -47,32 +55,68 @@ internal sealed class ClipboardRuntime
 
     private ClipboardRuntime()
     {
+        _lifecycle = new ComponentRuntime(Enabled, StartMonitorAsync, StopMonitorAsync);
         var app = Application.Current;
         if (app == null) { _startupError = "宿主用户界面不可用。"; return; }
-        app.Dispatcher.BeginInvoke(async () =>
+        PluginSettingsService.ComponentEnablementChanged += ScheduleRefresh;
+        PluginSettingsService.SettingChanged += SettingChanged;
+        app.Exit += (_, _) =>
         {
-            try
-            {
-                var data = UserDataService.GetUserDataDirectory();
-                if (string.IsNullOrEmpty(data)) throw new InvalidOperationException("宿主未提供用户数据目录。");
-                var loaded = await Task.Run(() => new HistoryStore(Path.Combine(data, "ClipboardHistory")));
-                if (_stopping) return;
-                _store = loaded;
-                _startupError = "";
-                var thread = new Thread(MonitorMain) { IsBackground = true, Name = "Lertaro Clipboard STA" };
-                thread.SetApartmentState(ApartmentState.STA);
-                thread.Start();
-                app.Exit += (_, _) =>
-                {
-                    _stopping = true;
-                    _dispatcher?.BeginInvoke(ShutdownMonitor);
-                    // The worker never waits for the UI: drain accepted records before normal process exit.
-                    Task pending; lock (_workerGate) pending = _work;
-                    pending.GetAwaiter().GetResult();
-                };
-            }
-            catch (Exception ex) { _startupError = ex.Message; Notify("剪贴板启动失败", ex.Message); }
+            _stopping = true;
+            Unsubscribe();
+            Task pending;
+            lock (_workerGate) { _acceptWork = false; pending = _work; }
+            _dispatcher?.BeginInvoke(ShutdownMonitor);
+            // Persistence never waits for the UI; finish already accepted writes on normal exit.
+            pending.GetAwaiter().GetResult();
+        };
+        app.Dispatcher.BeginInvoke(ScheduleRefresh, DispatcherPriority.ApplicationIdle);
+    }
+
+    private void SettingChanged(string pluginId, string key)
+    {
+        if (pluginId.Equals(PluginId, StringComparison.OrdinalIgnoreCase) ||
+            pluginId.Equals(PluginId + ".dll", StringComparison.OrdinalIgnoreCase)) ScheduleRefresh();
+    }
+    private void ScheduleRefresh()
+    {
+        var ui = Application.Current?.Dispatcher;
+        if (_stopping || ui == null || ui.HasShutdownStarted) return;
+        ui.BeginInvoke(async () =>
+        {
+            try { await RefreshLifecycleAsync(); }
+            catch (Exception ex) { _startupError = ex.Message; Notify("剪贴板运行状态更新失败", ex.Message); }
         }, DispatcherPriority.ApplicationIdle);
+    }
+    internal async Task RefreshLifecycleAsync()
+    {
+        await _lifecycle.RefreshAsync();
+        var dispatcher = _dispatcher;
+        if (Ready && dispatcher != null && !dispatcher.HasShutdownStarted)
+            await dispatcher.InvokeAsync(RefreshSettings);
+        if (!Enabled()) _startupError = "剪贴板组件已关闭。";
+    }
+    private async Task StartMonitorAsync()
+    {
+        if (_stopping || !Enabled()) return;
+        if (_store == null)
+        {
+            var data = UserDataService.GetUserDataDirectory();
+            if (string.IsNullOrEmpty(data)) throw new InvalidOperationException("宿主未提供用户数据目录。");
+            _store = await Task.Run(() => new HistoryStore(Path.Combine(data, "ClipboardHistory")));
+        }
+        if (_stopping || !Enabled()) return;
+        _startupError = "";
+        _monitorStopping = false;
+        _hotkeySignature = "";
+        _operations.Clear();
+        _monitorStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _monitorStopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(MonitorMain) { IsBackground = true, Name = "Lertaro Clipboard STA" };
+        thread.SetApartmentState(ApartmentState.STA);
+        try { thread.Start(); }
+        catch { _monitorStopped.TrySetResult(); throw; }
+        await _monitorStarted.Task;
     }
 
     private void MonitorMain()
@@ -92,26 +136,31 @@ internal sealed class ClipboardRuntime
             if (Native.ExternalWindow(current)) _target = current;
             _retryTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(35), DispatcherPriority.Background,
                 (_, _) => Capture(), _dispatcher); _retryTimer.Stop();
-            _settingsTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background,
-                (_, _) => RefreshSettings(), _dispatcher);
             RefreshSettings();
+            lock (_workerGate) _acceptWork = !_stopping && Enabled();
             Ready = true;
             QueueWork(() => { _store!.Prune(Limits); Persist(); });
             Logger.Log("[Clipboard] Native listener and hotkeys started.");
+            _monitorStarted!.TrySetResult();
             Dispatcher.Run();
         }
-        catch (Exception ex) { _startupError = ex.Message; Notify("剪贴板监听失败", ex.Message); }
-        finally { ShutdownMonitor(); }
+        catch (Exception ex) { _startupError = ex.Message; _monitorStarted!.TrySetException(ex); }
+        finally
+        {
+            ShutdownMonitor();
+            _dispatcher = null;
+            _monitorStopped!.TrySetResult();
+        }
     }
 
     private IntPtr WindowProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == 0x031D && !_stopping) { _readAttempts = 0; Capture(); }
-        if (msg == 0x0312 && !_stopping)
+        if (msg == 0x031D && !_stopping && !_monitorStopping) { _readAttempts = 0; Capture(); }
+        if (msg == 0x0312 && !_stopping && !_monitorStopping && Enabled())
         {
             handled = true;
             if (wParam.ToInt32() == 1) ShowHistory();
-            if (wParam.ToInt32() == 2) _ = PasteNextAsync();
+            if (wParam.ToInt32() == 2) TrackOperation(PasteNextAsync);
         }
         return IntPtr.Zero;
     }
@@ -142,7 +191,7 @@ internal sealed class ClipboardRuntime
     {
         _retryTimer?.Stop();
         var seq = Native.GetClipboardSequenceNumber();
-        if (_stopping || !Enabled() || seq == _seenSequence || seq == _selfSequence) { _seenSequence = seq; return; }
+        if (_stopping || _monitorStopping || !Enabled() || seq == _seenSequence || seq == _selfSequence) { _seenSequence = seq; return; }
         try
         {
             var owner = Native.GetClipboardOwner();
@@ -210,7 +259,7 @@ internal sealed class ClipboardRuntime
         {
             try
             {
-                if (_store == null) { Notify("剪贴板尚未就绪", Status); return; }
+                if (!Ready || !Enabled() || _store == null) { Notify("剪贴板尚未就绪", Status); return; }
                 SearchWindowService.HideWindow();
                 if (_panelWindow == null)
                 {
@@ -226,7 +275,18 @@ internal sealed class ClipboardRuntime
             catch (Exception ex) { Notify("剪贴板面板未能打开", ex.Message); SearchWindowService.ShowWindow(Keyword + " "); }
         });
     }
-    internal void Copy(ClipRecord item) => _dispatcher?.BeginInvoke(async () =>
+    private void TrackOperation(Func<Task> action)
+    {
+        if (_stopping || _monitorStopping || !Ready || !Enabled()) return;
+        _operations.RemoveAll(task => task.IsCompleted);
+        _operations.Add(action());
+    }
+    private void PostOperation(Func<Task> action)
+    {
+        var dispatcher = _dispatcher;
+        if (dispatcher != null && !dispatcher.HasShutdownStarted) dispatcher.BeginInvoke(() => TrackOperation(action));
+    }
+    internal void Copy(ClipRecord item) => PostOperation(async () =>
     {
         try { await WriteAsync(item); Notify("已复制", "历史内容已恢复到剪贴板。"); }
         catch (Exception ex) { Notify("复制失败", ex.Message); }
@@ -240,7 +300,7 @@ internal sealed class ClipboardRuntime
     {
         var target = destination ?? Destination();
         Native.GetWindowThreadProcessId(target, out var expectedPid);
-        _dispatcher?.BeginInvoke(async () =>
+        PostOperation(async () =>
         {
         if (_busy) return;
         _busy = true;
@@ -257,6 +317,11 @@ internal sealed class ClipboardRuntime
         Native.GetWindowThreadProcessId(target, out var expectedPid);
         try
         {
+            // WM_HOTKEY can overtake WM_CLIPBOARDUPDATE. Reconcile the current clipboard
+            // before freezing the batch, including a copy made immediately before this key.
+            Capture();
+            while (_retryTimer?.IsEnabled == true && !_stopping && !_monitorStopping)
+                await Task.Delay(40);
             // Finish queued capture work before freezing the copy-order batch.
             Task pending; lock (_workerGate) pending = _work;
             await pending;
@@ -270,11 +335,14 @@ internal sealed class ClipboardRuntime
         catch (Exception ex) { Notify("顺序粘贴失败", ex.Message + " 当前条目未跳过。"); }
         finally { _busy = false; }
     }
-    internal void ResetSequence() => _dispatcher?.BeginInvoke(() =>
+    internal void ResetSequence() => PostOperation(() =>
     {
-        if (_busy) return;
-        QueueWork(() => { lock (_gate) _sequence.Reset(); Persist(); });
-        Notify("顺序粘贴已重置", "现在开始复制下一批内容。");
+        if (!_busy)
+        {
+            QueueWork(() => { lock (_gate) _sequence.Reset(); Persist(); });
+            Notify("顺序粘贴已重置", "现在开始复制下一批内容。");
+        }
+        return Task.CompletedTask;
     });
 
     private async Task PasteAsync(ClipRecord item, IntPtr target, uint expectedPid)
@@ -292,7 +360,7 @@ internal sealed class ClipboardRuntime
         if (Native.IsIconic(target)) Native.ShowWindowAsync(target, 9);
         Native.SetForegroundWindow(target);
         for (var i = 0; Native.ModifiersDown() && i < 100; i++) await Task.Delay(10);
-        if (_stopping || Native.ModifiersDown()) throw new InvalidOperationException("请松开快捷键后重试。");
+        if (_stopping || _monitorStopping || !Enabled() || Native.ModifiersDown()) throw new InvalidOperationException("插件已停止或快捷键尚未松开，请重试。");
         if (Native.GetForegroundWindow() != target) throw new InvalidOperationException("未能恢复目标焦点，已停止粘贴。");
         if (Native.GetWindowThreadProcessId(target, out var checkPid) != targetThread || checkPid != targetPid)
             throw new InvalidOperationException("目标窗口已变化。");
@@ -308,7 +376,7 @@ internal sealed class ClipboardRuntime
         {
             try
             {
-                if (_stopping) throw new InvalidOperationException("插件正在停止。");
+                if (_stopping || _monitorStopping || !Enabled()) throw new InvalidOperationException("插件正在停止。");
                 switch (item.Kind)
                 {
                     case ClipKind.Text:
@@ -341,7 +409,11 @@ internal sealed class ClipboardRuntime
     { _store!.Delete(id); lock (_gate) _sequence.Remove(id); Persist(); RefreshSearch(); });
     internal void Clear() => QueueWork(() =>
     { _store!.Clear(); lock (_gate) _sequence.Reset(); Persist(); RefreshSearch(); });
-    internal void ApplySettings() => QueueWork(() => { _store!.Prune(Limits); Persist(); RefreshSearch(); });
+    internal void ApplySettings()
+    {
+        ScheduleRefresh();
+        QueueWork(() => { _store!.Prune(Limits); Persist(); RefreshSearch(); });
+    }
     private void Persist()
     {
         ClipRecord[] retained; lock (_gate) retained = _sequence.Retained.ToArray();
@@ -350,16 +422,19 @@ internal sealed class ClipboardRuntime
     }
     private void QueueWork(Action action)
     {
-        if (_stopping || _store == null) return;
-        lock (_workerGate) _work = _work.ContinueWith(_ =>
+        lock (_workerGate)
         {
-            try { action(); }
-            catch (Exception ex)
+            if (_stopping || !_acceptWork || _store == null) return;
+            _work = _work.ContinueWith(_ =>
             {
-                _persistenceError = ex;
-                Logger.Log("[Clipboard] " + ex.Message, LogLevel.Error); Notify("剪贴板保存失败", ex.Message);
-            }
-        }, TaskScheduler.Default);
+                try { action(); }
+                catch (Exception ex)
+                {
+                    _persistenceError = ex;
+                    Logger.Log("[Clipboard] " + ex.Message, LogLevel.Error); Notify("剪贴板保存失败", ex.Message);
+                }
+            }, TaskScheduler.Default);
+        }
     }
     private void RefreshSearch() => Application.Current?.Dispatcher.BeginInvoke(() =>
     {
@@ -376,21 +451,52 @@ internal sealed class ClipboardRuntime
     internal async Task StopAsync()
     {
         _stopping = true;
-        if (_dispatcher != null && !_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
-            await _dispatcher.InvokeAsync(ShutdownMonitor);
-        Task task; lock (_workerGate) task = _work; await task;
+        Unsubscribe();
+        await _lifecycle.StopAsync();
+        Task task; lock (_workerGate) { _acceptWork = false; task = _work; }
+        await task;
         if (_persistenceError != null) throw new IOException("剪贴板历史存在未解决的保存错误，已取消设置迁移。", _persistenceError);
     }
-    private void ShutdownMonitor()
+    private void Unsubscribe()
     {
-        Ready = false;
-        _retryTimer?.Stop(); _settingsTimer?.Stop();
+        PluginSettingsService.ComponentEnablementChanged -= ScheduleRefresh;
+        PluginSettingsService.SettingChanged -= SettingChanged;
+    }
+    private async Task StopMonitorAsync()
+    {
+        Task pending; lock (_workerGate) { _acceptWork = false; pending = _work; }
+        var dispatcher = _dispatcher;
+        if (dispatcher != null && !dispatcher.HasShutdownStarted && !dispatcher.HasShutdownFinished)
+        {
+            await dispatcher.InvokeAsync(() =>
+            {
+                Ready = false;
+                _monitorStopping = true;
+                ReleaseMonitorResources();
+                return Task.WhenAll(_operations.ToArray());
+            }).Task.Unwrap();
+            await dispatcher.InvokeAsync(ShutdownMonitor);
+        }
+        if (_monitorStopped != null) await _monitorStopped.Task;
+        await pending;
+        var ui = Application.Current?.Dispatcher;
+        if (ui != null && !ui.HasShutdownStarted) await ui.InvokeAsync(() => _panelWindow?.Close());
+    }
+    private void ReleaseMonitorResources()
+    {
+        _retryTimer?.Stop(); _retryTimer = null;
         if (_foregroundHook != IntPtr.Zero) { Native.UnhookWinEvent(_foregroundHook); _foregroundHook = IntPtr.Zero; }
         if (_window != null)
         {
             Native.UnregisterHotKey(_window.Handle, 1); Native.UnregisterHotKey(_window.Handle, 2);
             Native.RemoveClipboardFormatListener(_window.Handle); _window.Dispose(); _window = null;
         }
+    }
+    private void ShutdownMonitor()
+    {
+        Ready = false;
+        _monitorStopping = true;
+        ReleaseMonitorResources();
         if (_dispatcher != null && !_dispatcher.HasShutdownStarted) _dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);
     }
 }

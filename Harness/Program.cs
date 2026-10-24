@@ -15,8 +15,6 @@ using WinClipboard = System.Windows.Clipboard;
 
 internal static class Program
 {
-    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? cls, string? title);
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
     [STAThread]
@@ -58,7 +56,8 @@ internal static class Program
         UserDataService.GetUserDataDirectoryFunc = () => root;
         var settings = new Dictionary<string, object?> { ["Keyword"] = "testclip", ["OpenHotkey"] = "Ctrl+Alt+F9", ["NextHotkey"] = "Ctrl+Alt+F10" };
         PluginSettingsService.GetSettingFunc = (_, key, fallback) => settings.GetValueOrDefault(key, fallback);
-        PluginSettingsService.IsComponentEnabledFunc = (_, _, _) => true;
+        var componentEnabled = false;
+        PluginSettingsService.IsComponentEnabledFunc = (_, _, _) => componentEnabled;
         SearchRefreshService.RefreshMatchingFunc = _ => { };
         var host = new Window { Title = "Clipboard isolated SDK host", Width = 640, Height = 300 };
         SearchWindowService.ShowWindowFunc = query => { host.Content = new TextBlock { Text = query, FontSize = 24 }; host.Show(); host.Activate(); };
@@ -71,8 +70,13 @@ internal static class Program
         {
             try
             {
-                await Wait(() => ClipboardRuntime.Shared.Value.Ready, "runtime initialization");
                 var runtime = ClipboardRuntime.Shared.Value;
+                await runtime.RefreshLifecycleAsync();
+                Check(runtime.Store == null && !runtime.HasMonitorResources && !Directory.Exists(Path.Combine(root, "ClipboardHistory")),
+                    "disabled startup does not load, prune or monitor history", report);
+                componentEnabled = true; PluginSettingsService.NotifyComponentEnablementChanged();
+                await runtime.RefreshLifecycleAsync();
+                await Wait(() => ClipboardRuntime.Shared.Value.Ready, "runtime initialization");
                 runtime.ResetSequence(); await Task.Delay(150);
                 foreach (var value in new[] { "  A😀\r\n", "B中文", "  A😀\r\n" })
                 {
@@ -82,6 +86,29 @@ internal static class Program
                 }
                 await Wait(() => runtime.Store!.Snapshot().Length == 2, "clipboard notifications and deduplication");
                 Check(runtime.Store!.Snapshot().Any(x => x.Text == "  A😀\r\n"), "whitespace Unicode capture", report);
+                componentEnabled = false; PluginSettingsService.NotifyComponentEnablementChanged();
+                await runtime.RefreshLifecycleAsync();
+                Check(!runtime.Ready && !runtime.HasMonitorResources, "disable releases clipboard listener and foreground hook", report);
+                var openKey = Native.ParseHotkey("Ctrl+Alt+F9"); var nextKey = Native.ParseHotkey("Ctrl+Alt+F10");
+                try
+                {
+                    Check(Native.RegisterHotKey(IntPtr.Zero, 91, openKey.Modifiers, openKey.Key) &&
+                        Native.RegisterHotKey(IntPtr.Zero, 92, nextKey.Modifiers, nextKey.Key), "disable releases both global hotkeys", report);
+                }
+                finally { Native.UnregisterHotKey(IntPtr.Zero, 91); Native.UnregisterHotKey(IntPtr.Zero, 92); }
+                WinClipboard.SetText("must-not-be-recorded-while-disabled");
+                componentEnabled = true; PluginSettingsService.NotifyComponentEnablementChanged();
+                await runtime.RefreshLifecycleAsync();
+                Check(runtime.Ready && runtime.HasMonitorResources && !runtime.Store.Snapshot().Any(x => x.Text == "must-not-be-recorded-while-disabled"),
+                    "reenable restores monitoring without capturing disabled interval", report);
+                settings["OpenHotkey"] = "Ctrl+Alt+F8";
+                PluginSettingsService.NotifySettingChanged("Lertaro.Plugins.Clipboard", "OpenHotkey");
+                await runtime.RefreshLifecycleAsync();
+                try { Check(Native.RegisterHotKey(IntPtr.Zero, 91, openKey.Modifiers, openKey.Key), "setting event releases previous shortcut without polling", report); }
+                finally { Native.UnregisterHotKey(IntPtr.Zero, 91); }
+                settings["OpenHotkey"] = "Ctrl+Alt+F9";
+                PluginSettingsService.NotifySettingChanged("Lertaro.Plugins.Clipboard", "OpenHotkey");
+                await runtime.RefreshLifecycleAsync();
                 var everyResult = provider.GetInstantResults("testclip 😀").ToArray();
                 File.WriteAllText(Path.Combine(root, "results.json"), JsonSerializer.Serialize(everyResult.Select(x => new { x.Title, x.ActionArgument })));
                 var results = everyResult.Where(x => PluginPreviewCache.GetEntry(x.ActionArgument) != null).ToArray();
@@ -104,12 +131,26 @@ internal static class Program
                 var files = runtime.Store!.Snapshot().First(x => x.Kind == ClipKind.Files);
                 runtime.Copy(image); await Task.Delay(350);
                 Check(WinClipboard.ContainsImage(), "restore image", report);
+                if (WinClipboard.GetData("PNG") is not MemoryStream restoredPng) throw new InvalidDataException("PNG clipboard format missing.");
+                using (var restoredInput = new MemoryStream(restoredPng.ToArray()))
+                {
+                    var restored = BitmapDecoder.Create(restoredInput, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
+                    var converted = new FormatConvertedBitmap(restored, PixelFormats.Bgra32, null, 0);
+                    var restoredPixels = new byte[16]; converted.CopyPixels(restoredPixels, 8, 0);
+                    Check(restored.PixelWidth == 2 && restored.PixelHeight == 2 &&
+                        new[] { restoredPixels[3], restoredPixels[7], restoredPixels[11], restoredPixels[15] }.SequenceEqual(new byte[] { 128, 255, 255, 0 }),
+                        "restored PNG preserves dimensions and alpha channel", report);
+                }
                 runtime.Copy(files); await Task.Delay(350);
                 Check(WinClipboard.GetFileDropList().Cast<string>().SequenceEqual(files.Files), "restore file list", report);
                 runtime.Copy(ClipRecord.FromText("self-write")); await Task.Delay(350);
                 Check(!runtime.Store.Snapshot().Any(x => x.Text == "self-write"), "self write suppressed", report);
 
-                var target = targetProcess = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--target \"" + root + "\"") { UseShellExecute = false })!;
+                var targetStart = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+                if (Path.GetFileNameWithoutExtension(targetStart.FileName).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                    targetStart.ArgumentList.Add(typeof(Program).Assembly.Location);
+                targetStart.ArgumentList.Add("--target"); targetStart.ArgumentList.Add(root);
+                var target = targetProcess = Process.Start(targetStart)!;
                 await Wait(() => { target.Refresh(); return target.MainWindowHandle != IntPtr.Zero; }, "target window");
                 File.WriteAllText(Path.Combine(root, "ready.txt"), target.MainWindowHandle.ToString());
                 Native.SetForegroundWindow(target.MainWindowHandle);
@@ -118,19 +159,39 @@ internal static class Program
                 await Wait(() => File.Exists(Path.Combine(root, "target.txt")) && File.ReadAllText(Path.Combine(root, "target.txt")) == "paste-ok", "cross-process paste");
                 Check(true, "cross-process text paste", report);
                 runtime.ResetSequence(); await Task.Delay(200);
-                foreach (var value in new[] { "A", "B", "A" }) { WinClipboard.SetText(value); await Task.Delay(180); }
+                await Wait(() => runtime.PendingCopies == 0, "sequence reset accepted");
+                var copied = 0;
+                foreach (var value in new[] { "A", "B", "A" })
+                {
+                    WinClipboard.SetText(value); copied++;
+                    await Wait(() => runtime.PendingCopies == copied, "copy event " + copied + " accepted before the next copy");
+                }
                 for (var n = 0; n < 3; n++)
                 {
                     Native.SetForegroundWindow(target.MainWindowHandle);
                     await Wait(() => Native.GetForegroundWindow() == target.MainWindowHandle, "sequence target focus", 1200);
-                    var listener = FindWindowEx(new IntPtr(-3), IntPtr.Zero, null, "LertaroClipboardListener");
+                    var listener = runtime.ListenerHandle;
                     if (listener == IntPtr.Zero) throw new InvalidOperationException("Listener window not found.");
                     PostMessage(listener, 0x0312, new IntPtr(2), IntPtr.Zero);
                     await Task.Delay(300);
                 }
                 Check(File.ReadAllText(Path.Combine(root, "target.txt")) == "paste-okABA", "copy-order A B A", report);
+                runtime.ResetSequence();
+                await Wait(() => runtime.PendingCopies == 0, "immediate-paste batch reset");
+                WinClipboard.SetText("C"); await Wait(() => runtime.PendingCopies == 1, "immediate-paste C captured");
+                WinClipboard.SetText("D"); await Wait(() => runtime.PendingCopies == 2, "immediate-paste D captured");
+                WinClipboard.SetText("C");
+                // Deliberately do not wait for a clipboard notification before the hotkey.
+                PostMessage(runtime.ListenerHandle, 0x0312, new IntPtr(2), IntPtr.Zero);
+                await Wait(() => File.ReadAllText(Path.Combine(root, "target.txt")) == "paste-okABAC", "immediate paste first item");
+                PostMessage(runtime.ListenerHandle, 0x0312, new IntPtr(2), IntPtr.Zero);
+                await Wait(() => File.ReadAllText(Path.Combine(root, "target.txt")) == "paste-okABACD", "immediate paste second item");
+                PostMessage(runtime.ListenerHandle, 0x0312, new IntPtr(2), IntPtr.Zero);
+                await Wait(() => File.ReadAllText(Path.Combine(root, "target.txt")) == "paste-okABACDC", "immediate paste final duplicate");
+                Check(true, "copy immediately followed by paste keeps final duplicate in batch", report);
                 target.CloseMainWindow();
                 await plugin.PrepareForSettingsTransferAsync();
+                Check(!runtime.Ready && !runtime.HasMonitorResources, "settings transfer stops native resources after draining writes", report);
                 var reloaded = new HistoryStore(Path.Combine(root, "ClipboardHistory"));
                 Check(reloaded.Snapshot().Length >= 4, "restart persistence", report);
             }

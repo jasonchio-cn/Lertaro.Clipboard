@@ -9,6 +9,7 @@ public sealed class ClipboardPlugin : IPlugin, IConfigurable, IActionProvider
 {
     public string Name => "剪贴板历史";
     public string Description => "文本、图片和文件历史；搜索、预览、全局快捷键和按复制顺序粘贴。";
+    public string WebsiteUrl => "https://github.com/jasonchio-cn/Lertaro.Clipboard";
     public ClipboardPlugin() { _ = ClipboardRuntime.Shared.Value; }
     public Task PrepareForSettingsTransferAsync() => ClipboardRuntime.Shared.Value.StopAsync();
     public IEnumerable<ISearchResultAction> GetActions() => [];
@@ -37,7 +38,7 @@ public sealed class ClipboardPlugin : IPlugin, IConfigurable, IActionProvider
 public sealed class ClipboardTranslations : ITranslationProvider
 {
     public string Name => "剪贴板翻译";
-    public IReadOnlyList<string> SupportedCultures => ["zh-CN", "en"];
+    public IReadOnlyList<string> SupportedCultures => ["zh-CN", "en-US"];
     public IReadOnlyDictionary<string, string> GetTranslations(string cultureName) =>
         TranslationService.LoadEmbeddedTranslations(Assembly.GetExecutingAssembly(), cultureName, "Plugin");
 }

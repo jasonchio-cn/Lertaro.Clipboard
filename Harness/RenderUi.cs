@@ -117,10 +117,16 @@ internal static class RenderUi
                     var preview = (ClipboardPreview)((ContentControl)panel.FindName("PreviewHost")).Content;
                     var fileView = preview.FilePreview ?? throw new InvalidOperationException("File preview missing.");
                     await WaitFor(() => fileView.Current?.Path == textFile && fileView.Current.Kind == "text");
+                    fileView.Picker.UpdateLayout();
+                    if (!TextLabels(fileView.Picker).Contains("1. 项目说明.txt")) throw new InvalidOperationException("File picker shows an object or path instead of the display label.");
+                    checks.Add(theme + ": collapsed file picker shows its friendly filename label");
                     Save(window, Path.Combine(output, "panel-" + theme.ToLowerInvariant() + "-files-text.png"));
                     checks.Add(theme + ": file text content preview");
                     fileView.Picker.SelectedIndex = 1;
                     await WaitFor(() => fileView.Current?.Path == jsonFile && fileView.Current.Text.Contains("剪贴板"));
+                    fileView.Picker.UpdateLayout();
+                    if (!TextLabels(fileView.Picker).Contains("2. 配置.json")) throw new InvalidOperationException("File picker label did not follow the selected file.");
+                    checks.Add(theme + ": file picker display label follows selection");
                     checks.Add(theme + ": multi-file picker switches to formatted JSON");
                     fileView.Picker.IsDropDownOpen = true;
                     panel.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,
@@ -170,6 +176,12 @@ internal static class RenderUi
     {
         for (var attempt = 0; attempt < 100; attempt++) { if (ready()) return; await Task.Delay(30); }
         throw new TimeoutException("File preview did not reach expected state.");
+    }
+    private static IEnumerable<string> TextLabels(DependencyObject parent)
+    {
+        if (parent is TextBlock text) yield return text.Text;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            foreach (var label in TextLabels(VisualTreeHelper.GetChild(parent, i))) yield return label;
     }
     private static void Save(Window window, string path)
     {

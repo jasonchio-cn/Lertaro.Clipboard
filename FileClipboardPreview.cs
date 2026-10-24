@@ -24,7 +24,7 @@ internal sealed class FileClipboardPreview : UserControl
     internal FileClipboardPreview(string[] paths)
     {
         Resources.MergedDictionaries.Add(new ResourceDictionary
-        { Source = new Uri("pack://application:,,,/Lertaro.App;component/Resources/Styles/Windows/SettingsComboBox.xaml") });
+        { Source = new Uri("pack://application:,,,/Lertaro.Plugins.Clipboard;component/ClipboardControls.xaml") });
         var grid = new Grid();
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -33,7 +33,7 @@ internal sealed class FileClipboardPreview : UserControl
             DisplayMemberPath = nameof(FileChoice.Label), MinHeight = 34, HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Margin = new Thickness(0, 0, 0, 10), IsTextSearchEnabled = true };
         System.Windows.Automation.AutomationProperties.SetName(_picker, "选择要预览的文件");
-        _picker.SetResourceReference(StyleProperty, "SettingsComboBox");
+        _picker.SetResourceReference(StyleProperty, "ClipboardFilePicker");
         grid.Children.Add(_picker);
         var header = new Grid { Margin = new Thickness(0, 0, 0, 10) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -56,7 +56,6 @@ internal sealed class FileClipboardPreview : UserControl
         _picker.SelectedIndex = paths.Length > 0 ? 0 : -1;
         Loaded += (_, _) =>
         {
-            if (TryFindResource("AppIconFontFamily") == null) Resources["AppIconFontFamily"] = new FontFamily("Segoe MDL2 Assets");
             _ = LoadSelected();
         };
         Unloaded += (_, _) => { _load?.Cancel(); };
@@ -65,7 +64,7 @@ internal sealed class FileClipboardPreview : UserControl
     private Button MakeButton(string label, Action action)
     {
         var button = new Button { Content = label, Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(5, 0, 0, 0), MinWidth = 0, FontSize = 11 };
-        button.SetResourceReference(StyleProperty, "SettingsButton");
+        button.SetResourceReference(StyleProperty, "ClipboardPreviewButton");
         button.Click += (_, _) => action(); return button;
     }
     private void OpenSelected()

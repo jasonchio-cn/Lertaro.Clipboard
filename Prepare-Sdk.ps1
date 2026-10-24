@@ -3,8 +3,8 @@ param([string]$Destination = (Join-Path $PSScriptRoot '.local\sdk'))
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $archive=Join-Path ([IO.Path]::GetTempPath()) ('lertaro-sdk-'+[guid]::NewGuid().ToString('N')+'.zip')
-$uri='https://github.com/Lertaro/Lertaro/releases/download/v5.9.6/Lertaro-Portable.zip'
-$expected='AF4B4F965CE9FBACC57CFA4E8E525F8C65A3397F8A8F98642AE66BCA5F78FA84'
+$uri='https://github.com/Lertaro/Lertaro/releases/download/v5.10.0/Lertaro-Portable.zip'
+$expected='1C57722079504BBF4E9F51DD1DBA9211306712DD0EDB0AFB0BD6947F8A890EB7'
 try {
     [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $uri -OutFile $archive -UseBasicParsing
@@ -19,7 +19,7 @@ try {
         $source=$entries[0].Open()
         try {$output=[IO.File]::Create($target);try{$source.CopyTo($output)}finally{$output.Dispose()}}finally{$source.Dispose()}
         $version=[Reflection.AssemblyName]::GetAssemblyName($target).Version
-        if($version.ToString(3) -ne '2.1.3'){throw '下载 SDK 的版本不是 2.1.3。'}
+        if($version.ToString(3) -ne '2.3.0'){throw '下载 SDK 的版本不是 2.3.0。'}
         Write-Host ('已准备 Lertaro Plugin SDK '+$version+'：'+[IO.Path]::GetFullPath($target))
     } finally {$zip.Dispose()}
 } finally {if(Test-Path -LiteralPath $archive){Remove-Item -LiteralPath $archive}}

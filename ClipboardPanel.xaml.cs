@@ -29,17 +29,6 @@ public partial class ClipboardPanel : UserControl, IDisposable
         { ShowFooter = false, MinWidth = 950, MinHeight = 620, ResizeMode = ResizeMode.CanResize };
         window.ContentHostControl.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         window.ContentHostControl.VerticalContentAlignment = VerticalAlignment.Stretch;
-        // A text close mark remains legible when a theme's optional icon font is unavailable.
-        window.Loaded += (_, _) =>
-        {
-            void Visit(DependencyObject node)
-            {
-                if (node is Button button && button.Content is string glyph && glyph == "\uE8BB")
-                { button.Content = "×"; button.FontFamily = new FontFamily("Segoe UI"); button.FontSize = 19; }
-                for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) Visit(VisualTreeHelper.GetChild(node, i));
-            }
-            Visit(window);
-        };
         return window;
     }
 

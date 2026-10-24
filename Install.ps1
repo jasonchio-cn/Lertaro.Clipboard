@@ -28,7 +28,7 @@ try {
         $expected = (Get-Content -LiteralPath $hashFile -Raw).Trim().Split(' ')[0]
         if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $expected) { throw 'DLL 校验失败，未进行安装。' }
         $sdk = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $root 'Lertaro.PluginSdk.dll')).Version
-        if ($sdk.Major -ne 2 -or $sdk.Minor -ne 1 -or $sdk.Build -ne 3) { throw "此包验证的 SDK 为 2.1.3，目标为 $sdk，请先验证兼容性。" }
+        if ($sdk.Major -ne 2 -or $sdk.Minor -ne 3 -or $sdk.Build -ne 0) { throw "此包适配 Lertaro 5.10.0 / SDK 2.3.0，目标 SDK 为 $sdk，请使用匹配版本。" }
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
         $temp = Join-Path $destination ('clipboard-'+[guid]::NewGuid().ToString('N')+'.tmp')
         try {

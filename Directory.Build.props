@@ -4,9 +4,26 @@
     <LertaroDir Condition="'$(LertaroDir)' == '' and '$(LERTARO_DIR)' != ''">$(LERTARO_DIR)</LertaroDir>
     <LertaroDir Condition="'$(LertaroDir)' == ''">$(MSBuildThisFileDirectory).local\sdk</LertaroDir>
     <Deterministic>true</Deterministic>
+    <AssemblySearchPath_UseCandidateAssemblyFiles>false</AssemblySearchPath_UseCandidateAssemblyFiles>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**\bin\**;**\obj\**;.local\**;artifacts\**</DefaultItemExcludes>
   </PropertyGroup>
   <Target Name="ValidateLertaroSdk" BeforeTargets="ResolveAssemblyReferences">
     <Error Condition="!Exists('$(LertaroDir)\Lertaro.PluginSdk.dll')"
            Text="Lertaro.PluginSdk.dll was not found. Run Prepare-Sdk.ps1 or supply -p:LertaroDir=your-Lertaro-directory." />
+    <GetAssemblyIdentity AssemblyFiles="$(LertaroDir)\Lertaro.PluginSdk.dll">
+      <Output TaskParameter="Assemblies" ItemName="_LertaroSdkIdentity" />
+    </GetAssemblyIdentity>
+    <Error Condition="'%(_LertaroSdkIdentity.Version)' != '2.3.0.0'"
+           Text="This version targets Lertaro 5.10.0 / Plugin SDK 2.3.0. Supply the matching SDK." />
+  </Target>
+  <Target Name="ValidateResolvedLertaroSdk" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <_ResolvedLertaroSdk Include="@(ReferencePath)" Condition="'%(ReferencePath.Filename)' == 'Lertaro.PluginSdk'" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_ExpectedLertaroSdk>$([System.IO.Path]::GetFullPath('$(LertaroDir)\Lertaro.PluginSdk.dll'))</_ExpectedLertaroSdk>
+    </PropertyGroup>
+    <Error Condition="'@(_ResolvedLertaroSdk)' != '$(_ExpectedLertaroSdk)'"
+           Text="The resolved Plugin SDK does not match LertaroDir. Remove shadowing references before packaging." />
   </Target>
 </Project>
