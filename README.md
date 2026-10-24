@@ -16,17 +16,34 @@
 
 ## 安装
 
+### 手动复制 DLL（推荐）
+
 1. 从 [发行页面](https://github.com/jasonchio-cn/Lertaro.Clipboard/releases) 下载 `Lertaro-Clipboard-版本号.zip`，解压到一个文件夹。GitHub 自动生成的 Source code 压缩包是源码，不含编译好的插件。
-2. 完全退出 Lertaro，在解压目录打开 PowerShell，执行下列命令，将示例路径替换为自己的 Lertaro 安装目录。
-3. 重新启动 Lertaro，在插件设置中检查“剪贴板历史”。
+2. 完全退出 Lertaro，打开包含 `Lertaro.App.exe` 的安装目录，在其中新建 `Plugins\Lertaro.Plugins.Clipboard` 文件夹（已存在则直接使用）。
+3. 将解压得到的 `Lertaro.Plugins.Clipboard.dll` 复制到该文件夹。
+4. 重新启动 Lertaro，在插件设置中检查“剪贴板历史”。
+
+安装后的目录结构：
+
+```text
+Lertaro/
+├── Lertaro.App.exe
+└── Plugins/
+    └── Lertaro.Plugins.Clipboard/
+        └── Lertaro.Plugins.Clipboard.dll
+```
+
+可使用发行包中的 `SHA256.txt` 校验 DLL；发行页面还附有整个 ZIP 的 `.sha256` 校验文件。手动复制不会检查宿主 SDK 版本，请先确认使用上文列出的已适配版本。
+
+### 安装脚本（可选）
+
+也可以让脚本完成复制，并自动校验插件 SHA-256 和宿主 SDK 版本。完全退出 Lertaro 后，在解压目录打开 PowerShell，执行下列命令，将示例路径替换为自己的 Lertaro 安装目录，然后重新启动 Lertaro：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -LertaroDir 'C:\Applications\Lertaro'
 ```
 
-脚本校验插件 SHA-256 和宿主 SDK 版本，将 DLL 安装到 `Plugins\Lertaro.Plugins.Clipboard`，升级时保留旧 DLL 备份。只有安装目录需要管理员权限时才需要提权；日常运行用普通权限即可。
-
-也可以校验发行包中的 `SHA256.txt` 后，手动把 `Lertaro.Plugins.Clipboard.dll` 放入上述插件目录，再重启宿主。发行页面还附有整个 ZIP 的 `.sha256` 校验文件。
+脚本将 DLL 安装到上述插件目录，升级时保留旧 DLL 备份。只有安装目录需要管理员权限时才需要提权；日常运行用普通权限即可。
 
 ## 使用
 
@@ -78,7 +95,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -LertaroDir 'C
 
 ## 升级与停用
 
-退出 Lertaro 后，用新版发行包执行相同安装命令，再启动宿主。安装脚本不迁移或清空个人历史。
+完全退出 Lertaro 后，用新版发行包中的 DLL 替换上述插件目录内的同名文件，再启动宿主；建议替换前将旧 DLL 备份到插件目录之外。也可使用新版发行包的安装脚本升级，脚本会保留旧 DLL 备份。两种方式均不会清空个人历史。
 
 临时停用可在宿主插件设置中关闭插件，或退出宿主后执行：
 
