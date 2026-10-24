@@ -17,13 +17,16 @@ internal sealed class ClipboardRuntime
     internal static readonly Lazy<ClipboardRuntime> Shared = new(() => new ClipboardRuntime());
     private readonly object _gate = new();
     private readonly object _workerGate = new();
-    private readonly PasteSequence _sequence = new();
+    private readonly PasteSequence _sequence;
+    private readonly Func<HistoryStore> _loadStore;
     private readonly ComponentRuntime _lifecycle;
     private readonly List<Task> _operations = [];
     private Task _work = Task.CompletedTask;
+    private Task<HistoryStore>? _storeLoading;
+    private long _sequenceGeneration;
     private TaskCompletionSource? _monitorStarted, _monitorStopped;
     private bool _acceptWork;
-    private HistoryStore? _store;
+    private volatile HistoryStore? _store;
     private Dispatcher? _dispatcher;
     private HwndSource? _window;
     private PluginWindow? _panelWindow;
@@ -45,6 +48,7 @@ internal sealed class ClipboardRuntime
     internal IntPtr ListenerHandle => _window?.Handle ?? IntPtr.Zero;
     internal bool HasMonitorResources => _window != null || _foregroundHook != IntPtr.Zero;
     internal int PendingCopies { get { lock (_gate) return _sequence.PendingCount; } }
+    internal Task FlushAsync() { lock (_workerGate) return _work; }
     internal string Status => _startupError;
     internal string Keyword => Setting("Keyword", "clip").Trim() is { Length: > 0 } k ? k : "clip";
     internal T Setting<T>(string key, T fallback) => PluginSettingsService.GetSetting(PluginId, key, fallback);
@@ -53,9 +57,15 @@ internal sealed class ClipboardRuntime
         Math.Clamp(Setting("ImageMB", 128), 1, 2048) * 1024L * 1024,
         Math.Clamp(Setting("ItemMB", 10), 1, 64) * 1024L * 1024);
 
-    private ClipboardRuntime()
+    // The storage-only constructor also supports maintenance when there is no monitor.
+    internal ClipboardRuntime(Func<HistoryStore> loadStore, PasteSequence? sequence = null)
     {
+        _loadStore = loadStore;
+        _sequence = sequence ?? new();
         _lifecycle = new ComponentRuntime(Enabled, StartMonitorAsync, StopMonitorAsync);
+    }
+    private ClipboardRuntime() : this(LoadHostStore)
+    {
         var app = Application.Current;
         if (app == null) { _startupError = "宿主用户界面不可用。"; return; }
         PluginSettingsService.ComponentEnablementChanged += ScheduleRefresh;
@@ -99,12 +109,7 @@ internal sealed class ClipboardRuntime
     private async Task StartMonitorAsync()
     {
         if (_stopping || !Enabled()) return;
-        if (_store == null)
-        {
-            var data = UserDataService.GetUserDataDirectory();
-            if (string.IsNullOrEmpty(data)) throw new InvalidOperationException("宿主未提供用户数据目录。");
-            _store = await Task.Run(() => new HistoryStore(Path.Combine(data, "ClipboardHistory")));
-        }
+        await EnsureStoreAsync();
         if (_stopping || !Enabled()) return;
         _startupError = "";
         _monitorStopping = false;
@@ -117,6 +122,22 @@ internal sealed class ClipboardRuntime
         try { thread.Start(); }
         catch { _monitorStopped.TrySetResult(); throw; }
         await _monitorStarted.Task;
+    }
+    private static HistoryStore LoadHostStore()
+    {
+        var data = UserDataService.GetUserDataDirectory();
+        if (string.IsNullOrEmpty(data)) throw new InvalidOperationException("宿主未提供用户数据目录。");
+        return new HistoryStore(Path.Combine(data, "ClipboardHistory"));
+    }
+    private Task<HistoryStore> EnsureStoreAsync()
+    {
+        lock (_workerGate)
+        {
+            if (_store != null) return Task.FromResult(_store);
+            if (_storeLoading == null || _storeLoading.IsFaulted || _storeLoading.IsCanceled)
+                _storeLoading = Task.Run(() => { var store = _loadStore(); _store = store; return store; });
+            return _storeLoading;
+        }
     }
 
     private void MonitorMain()
@@ -325,27 +346,39 @@ internal sealed class ClipboardRuntime
             // Finish queued capture work before freezing the copy-order batch.
             Task pending; lock (_workerGate) pending = _work;
             await pending;
-            ClipRecord? next; lock (_gate) next = _sequence.Peek();
+            var (next, generation) = PeekSequence();
             if (next == null) { Notify("已粘贴完", "请先重置顺序粘贴，再复制下一批内容。"); return; }
-            await PasteAsync(next, target, expectedPid);
-            (int Position, int Total) progress;
-            lock (_gate) { _sequence.Advance(); progress = _sequence.Progress; }
+            await PasteAsync(next, target, expectedPid, generation);
+            if (!TryAdvanceSequence(generation, out var progress)) return;
             if (progress.Position == progress.Total) Notify("已粘贴完", $"共 {progress.Total} 条；不会自动循环。");
         }
+        catch (OperationCanceledException ex) { Notify("顺序粘贴已取消", ex.Message); }
         catch (Exception ex) { Notify("顺序粘贴失败", ex.Message + " 当前条目未跳过。"); }
         finally { _busy = false; }
     }
-    internal void ResetSequence() => PostOperation(() =>
+    internal void ResetSequence() => _ = ReportMaintenanceAsync(ResetSequenceAsync,
+        "顺序粘贴已重置", "现在开始复制下一批内容。");
+    internal Task ResetSequenceAsync() => EnqueueWork(() =>
     {
-        if (!_busy)
+        lock (_gate) { _sequence.Reset(); _sequenceGeneration++; }
+        if (_store != null) Persist();
+        RefreshSearch();
+    }, maintenance: true, loadStore: false);
+    internal (ClipRecord? Item, long Generation) PeekSequence()
+    {
+        lock (_gate) return (_sequence.Peek(), _sequenceGeneration);
+    }
+    internal bool TryAdvanceSequence(long generation, out (int Position, int Total) progress)
+    {
+        lock (_gate)
         {
-            QueueWork(() => { lock (_gate) _sequence.Reset(); Persist(); });
-            Notify("顺序粘贴已重置", "现在开始复制下一批内容。");
+            progress = _sequence.Progress;
+            if (generation != _sequenceGeneration) return false;
+            _sequence.Advance(); progress = _sequence.Progress; return true;
         }
-        return Task.CompletedTask;
-    });
+    }
 
-    private async Task PasteAsync(ClipRecord item, IntPtr target, uint expectedPid)
+    private async Task PasteAsync(ClipRecord item, IntPtr target, uint expectedPid, long? generation = null)
     {
         var current = Native.GetForegroundWindow();
         Logger.Log($"[Clipboard] Paste start target={target}, current={current}", LogLevel.Debug);
@@ -367,7 +400,12 @@ internal sealed class ClipboardRuntime
         await WriteAsync(item);
         Logger.Log("[Clipboard] Clipboard restored", LogLevel.Debug);
         if (Native.GetForegroundWindow() != target) throw new InvalidOperationException("焦点发生变化，内容已复制但未发送粘贴。");
-        Native.PasteKeys();
+        lock (_gate)
+        {
+            if (generation.HasValue && generation != _sequenceGeneration)
+                throw new OperationCanceledException("顺序队列已清空或重置，已取消本次粘贴。");
+            Native.PasteKeys();
+        }
         Logger.Log("[Clipboard] Paste input submitted", LogLevel.Debug);
     }
     private async Task WriteAsync(ClipRecord item)
@@ -407,8 +445,19 @@ internal sealed class ClipboardRuntime
 
     internal void Delete(string id) => QueueWork(() =>
     { _store!.Delete(id); lock (_gate) _sequence.Remove(id); Persist(); RefreshSearch(); });
-    internal void Clear() => QueueWork(() =>
-    { _store!.Clear(); lock (_gate) _sequence.Reset(); Persist(); RefreshSearch(); });
+    internal void Clear() => _ = ReportMaintenanceAsync(ClearAsync,
+        "历史已清空", "历史记录、顺序队列和缓存图片已清空。");
+    internal Task ClearAsync() => EnqueueWork(() =>
+    {
+        _store!.Clear();
+        lock (_gate) { _sequence.Reset(); _sequenceGeneration++; }
+        Persist(); RefreshSearch();
+    }, maintenance: true);
+    private static async Task ReportMaintenanceAsync(Func<Task> action, string title, string message)
+    {
+        try { await action(); Notify(title, message); }
+        catch (Exception ex) { Notify("剪贴板维护失败", ex.Message); }
+    }
     internal void ApplySettings()
     {
         ScheduleRefresh();
@@ -420,20 +469,33 @@ internal sealed class ClipboardRuntime
         _store!.Save(retained);
         _persistenceError = null;
     }
-    private void QueueWork(Action action)
+    private void QueueWork(Action action) => _ = EnqueueWork(action);
+    private Task EnqueueWork(Action action, bool maintenance = false, bool loadStore = true)
     {
         lock (_workerGate)
         {
-            if (_stopping || !_acceptWork || _store == null) return;
-            _work = _work.ContinueWith(_ =>
+            if (_stopping)
+                return maintenance ? Task.FromException(new InvalidOperationException("插件正在退出，未执行维护操作。")) : Task.CompletedTask;
+            if (!maintenance && (!_acceptWork || _store == null)) return Task.CompletedTask;
+            var operation = _work.ContinueWith(async _ =>
             {
-                try { action(); }
-                catch (Exception ex)
-                {
-                    _persistenceError = ex;
-                    Logger.Log("[Clipboard] " + ex.Message, LogLevel.Error); Notify("剪贴板保存失败", ex.Message);
-                }
-            }, TaskScheduler.Default);
+                if (maintenance && loadStore) await EnsureStoreAsync().ConfigureAwait(false);
+                action();
+            }, TaskScheduler.Default).Unwrap();
+            // The tail never faults, so shutdown can always drain it and then report the
+            // last persistence error. Explicit callers receive the operation's failure.
+            _work = ObserveWorkAsync(operation, maintenance);
+            return maintenance ? operation : _work;
+        }
+    }
+    private async Task ObserveWorkAsync(Task operation, bool maintenance)
+    {
+        try { await operation.ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            _persistenceError = ex;
+            Logger.Log("[Clipboard] " + ex.Message, LogLevel.Error);
+            if (!maintenance) Notify("剪贴板保存失败", ex.Message);
         }
     }
     private void RefreshSearch() => Application.Current?.Dispatcher.BeginInvoke(() =>

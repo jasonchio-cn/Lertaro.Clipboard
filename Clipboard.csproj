@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Lertaro.Plugins.Clipboard</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <DefaultItemExcludes>$(DefaultItemExcludes);Tests\**;Harness\**</DefaultItemExcludes>
   </PropertyGroup>

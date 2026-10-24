@@ -5,7 +5,7 @@
   "Clip_MaxItems": "最多历史条数（1–10000）",
   "Clip_Days": "保留天数（1–3650）",
   "Clip_TotalMB": "历史内容总容量 MB（16–2048）",
-  "Clip_ImageMB": "图片容量 MB（1–2048）",
+  "Clip_ImageMB": "图片历史累计容量 MB（1–2048）",
   "Clip_ItemMB": "单条内容上限 MB（1–64）",
   "Clip_Reset": "重置顺序粘贴，从现在开始收集新一批",
   "Clip_Clear": "清空全部历史…"

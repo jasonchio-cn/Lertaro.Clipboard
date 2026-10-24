@@ -5,7 +5,7 @@
   "Clip_MaxItems": "Maximum records (1–10000)",
   "Clip_Days": "Retention days (1–3650)",
   "Clip_TotalMB": "Total content MB (16–2048)",
-  "Clip_ImageMB": "Image content MB (1–2048)",
+  "Clip_ImageMB": "Total image history MB (1–2048)",
   "Clip_ItemMB": "Single item MB (1–64)",
   "Clip_Reset": "Reset sequential paste and start a new batch",
   "Clip_Clear": "Clear all history…"

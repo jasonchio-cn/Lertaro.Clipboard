@@ -64,6 +64,7 @@ internal static class Program
         SearchWindowService.HideWindowFunc = host.Hide;
         PluginNotificationService.ShowRequestFunc = (request, _) =>
         { File.AppendAllText(Path.Combine(root, "notifications.log"), request.Title + ": " + request.Message + "\n"); return null; };
+        PluginMessageBoxService.ShowFunc = (_, _, _, _, _) => MessageBoxResult.Yes;
         var plugin = new ClipboardPlugin(); var provider = new ClipboardProvider();
         Process? targetProcess = null;
         app.Startup += async (_, _) =>
@@ -74,6 +75,12 @@ internal static class Program
                 await runtime.RefreshLifecycleAsync();
                 Check(runtime.Store == null && !runtime.HasMonitorResources && !Directory.Exists(Path.Combine(root, "ClipboardHistory")),
                     "disabled startup does not load, prune or monitor history", report);
+                var initialHistory = new HistoryStore(Path.Combine(root, "ClipboardHistory"));
+                initialHistory.Add(ClipRecord.FromText("cold-disabled fixture"), new()); initialHistory.Save([]);
+                var fields = plugin.GetConfigSchema().Fields;
+                fields.Single(field => field.Key == "Clear").OnClick!(); await runtime.FlushAsync();
+                Check(new HistoryStore(initialHistory.Root).Snapshot().Length == 0 && !runtime.Ready && !runtime.HasMonitorResources,
+                    "settings clear button works during disabled startup without native resources", report);
                 componentEnabled = true; PluginSettingsService.NotifyComponentEnablementChanged();
                 await runtime.RefreshLifecycleAsync();
                 await Wait(() => ClipboardRuntime.Shared.Value.Ready, "runtime initialization");
@@ -96,11 +103,25 @@ internal static class Program
                         Native.RegisterHotKey(IntPtr.Zero, 92, nextKey.Modifiers, nextKey.Key), "disable releases both global hotkeys", report);
                 }
                 finally { Native.UnregisterHotKey(IntPtr.Zero, 91); Native.UnregisterHotKey(IntPtr.Zero, 92); }
+                var beforeReset = runtime.Store!.Snapshot().Length;
+                fields.Single(field => field.Key == "Reset").OnClick!(); await runtime.FlushAsync();
+                Check(runtime.PendingCopies == 0 && runtime.Store.Snapshot().Length == beforeReset && !runtime.HasMonitorResources,
+                    "settings reset button works after disabling and preserves history", report);
+                fields.Single(field => field.Key == "Clear").OnClick!(); await runtime.FlushAsync();
+                Check(runtime.Store.Snapshot().Length == 0 && new HistoryStore(runtime.Store.Root).Snapshot().Length == 0 && !runtime.HasMonitorResources,
+                    "settings clear button persists after disabling without restarting monitor", report);
                 WinClipboard.SetText("must-not-be-recorded-while-disabled");
                 componentEnabled = true; PluginSettingsService.NotifyComponentEnablementChanged();
                 await runtime.RefreshLifecycleAsync();
                 Check(runtime.Ready && runtime.HasMonitorResources && !runtime.Store.Snapshot().Any(x => x.Text == "must-not-be-recorded-while-disabled"),
                     "reenable restores monitoring without capturing disabled interval", report);
+                foreach (var value in new[] { "  A😀\r\n", "B中文" })
+                {
+                    WinClipboard.SetText(value);
+                    await Wait(() => runtime.Store.Snapshot().Any(x => x.Text == value), "capture after disabled maintenance");
+                }
+                Check(runtime.PendingCopies == 2 && runtime.Store.Snapshot().Length == 2,
+                    "reenable starts with cleared queue and captures only new copies", report);
                 settings["OpenHotkey"] = "Ctrl+Alt+F8";
                 PluginSettingsService.NotifySettingChanged("Lertaro.Plugins.Clipboard", "OpenHotkey");
                 await runtime.RefreshLifecycleAsync();
