@@ -112,6 +112,9 @@ internal static class RenderUi
                     await Task.Delay(250);
                     if (list.Items.Count != 1 || ((ClipboardRow)list.Items[0]).Thumbnail == null) throw new InvalidOperationException("Image thumbnail failed.");
                     Save(window, Path.Combine(output, "panel-" + theme.ToLowerInvariant() + "-image.png"));
+                    var clipboardImage = ((ContentControl)panel.FindName("PreviewHost")).Content as ClipboardPreview;
+                    if (clipboardImage?.ImagePreview is not { Source: BitmapSource, IsVisible: true } displayed || displayed.ActualHeight <= 0)
+                        throw new InvalidOperationException("Clipboard image source was not visibly rendered.");
                     checks.Add(theme + ": image filter, thumbnail and preview");
                     var filesTab = tabs.Children.OfType<RadioButton>().Single(t => (string)t.Tag == "files"); filesTab.IsChecked = true;
                     var preview = (ClipboardPreview)((ContentControl)panel.FindName("PreviewHost")).Content;
@@ -164,6 +167,7 @@ internal static class RenderUi
                     search.Text = ""; await Task.Delay(200); window.Width = 950; window.Height = 620; await Task.Delay(100);
                     Save(window, Path.Combine(output, "panel-" + theme.ToLowerInvariant() + "-small.png"));
                     panel.Dispose(); window.Close();
+                    await HostPreviewChecks.Run(host, output, theme, checks);
                 }
                 File.WriteAllText(Path.Combine(output, "ui-checks.json"), JsonSerializer.Serialize(checks, new JsonSerializerOptions { WriteIndented = true }));
             }

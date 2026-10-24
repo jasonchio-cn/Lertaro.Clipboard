@@ -7,9 +7,12 @@ namespace Lertaro.Plugins.Clipboard;
 
 public sealed class ClipboardProvider : IInstantResultProvider
 {
-    private static readonly ConcurrentDictionary<string, (ClipRecord Record, PluginPreviewEntry Entry)> Previews = new();
+    private static readonly ConcurrentDictionary<string, (ClipRecord Record, bool HasThumbnail, PluginPreviewEntry Entry)> Previews = new();
     private static readonly ConcurrentDictionary<string, ClipRecord> Targets = new();
-    private readonly ClipboardRuntime _runtime = ClipboardRuntime.Shared.Value;
+    private static readonly ClipboardThumbnails Thumbnails = new();
+    private readonly ClipboardRuntime _runtime;
+    public ClipboardProvider() : this(ClipboardRuntime.Shared.Value) { }
+    internal ClipboardProvider(ClipboardRuntime runtime) => _runtime = runtime;
     public string Name => "剪贴板历史";
     public IReadOnlyList<string> QueryTriggerKeywords => [_runtime.Keyword];
     private const string Icon = "M8,2 L16,2 L16,4 L20,4 L20,23 L4,23 L4,4 L8,4 Z M8,6 L16,6 L16,4 L8,4 Z M7,10 L17,10 M7,14 L17,14 M7,18 L14,18";
@@ -36,14 +39,20 @@ public sealed class ClipboardProvider : IInstantResultProvider
             if (Targets.TryGetValue(token, out var target) && !liveIds.Contains(target.Id)) Targets.TryRemove(token, out _);
         foreach (var item in matches.Take(100))
         {
-            var cached = Previews.AddOrUpdate(item.Id, _ => MakePreview(item), (_, old) => old.Record == item ? old : MakePreview(item));
+            var bitmap = item.Kind == ClipKind.Image ? Thumbnails.GetHBitmap(store.ImagePath(item), RefreshImages, ThemeService.IsDarkTheme) : IntPtr.Zero;
+            var hasThumbnail = bitmap != IntPtr.Zero;
+            // The host retains rows with unchanged preview tokens without updating their
+            // icons. Rotate the SDK entry once the asynchronous thumbnail becomes ready.
+            var cached = Previews.AddOrUpdate(item.Id, _ => MakePreview(item, hasThumbnail),
+                (_, old) => old.Record == item && old.HasThumbnail == hasThumbnail ? old : MakePreview(item, hasThumbnail));
             var token = PluginPreviewCache.Register(cached.Entry);
             Targets[token] = item;
             yield return new InstantResultItem
             {
                 Title = Short(item.Summary, 160),
                 Description = $"{Label(item.Category)} · {item.CopiedAt.ToLocalTime():MM-dd HH:mm} · {item.Source}",
-                IconData = item.Kind == ClipKind.Image ? "path:" + store.ImagePath(item) : Icon,
+                IconData = Icon,
+                HBitmapIcon = bitmap,
                 ActionType = "None", ActionArgument = token,
                 OnExecuteFunc = () => { _runtime.Paste(item); return false; }
             };
@@ -54,8 +63,14 @@ public sealed class ClipboardProvider : IInstantResultProvider
         yield return Command("重置顺序粘贴", "清除本轮队列，从现在起收集下一批复制内容", _runtime.ResetSequence);
         yield return Command("清空剪贴板历史…", "删除全部历史和图片缓存", ClipboardMenu.ConfirmClear);
     }
-    private (ClipRecord Record, PluginPreviewEntry Entry) MakePreview(ClipRecord item) =>
-        (item, new PluginPreviewEntry(Short(item.Summary, 100), Name, new Lazy<System.Windows.Controls.UserControl>(() => new ClipboardPreview(item, _runtime.Store!))));
+    private void RefreshImages()
+    {
+        var ui = System.Windows.Application.Current?.Dispatcher;
+        if (ui != null && !ui.HasShutdownStarted)
+            ui.BeginInvoke(() => SearchRefreshService.RefreshIfMatches(q => TriggerWord.TryMatch(q, _runtime.Keyword, out _)));
+    }
+    private (ClipRecord Record, bool HasThumbnail, PluginPreviewEntry Entry) MakePreview(ClipRecord item, bool hasThumbnail) =>
+        (item, hasThumbnail, new PluginPreviewEntry(Short(item.Summary, 100), Name, new Lazy<System.Windows.Controls.UserControl>(() => new ClipboardPreview(item, _runtime.Store!))));
     internal static bool Matches(ClipRecord item, string term)
     {
         if (string.IsNullOrWhiteSpace(term)) return true;

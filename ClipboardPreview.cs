@@ -11,6 +11,7 @@ internal sealed class ClipboardPreview : UserControl
 {
     internal FileClipboardPreview? FilePreview { get; }
     internal bool IsFilePickerOpen => FilePreview?.IsPickerOpen == true;
+    internal Image? ImagePreview { get; }
     internal ClipboardPreview(ClipRecord item, HistoryStore store)
     {
         var grid = new Grid { Margin = new Thickness(16) };
@@ -27,7 +28,7 @@ internal sealed class ClipboardPreview : UserControl
         }
         else if (item.Kind == ClipKind.Image)
         {
-            var image = new Image { Stretch = Stretch.Uniform };
+            var image = ImagePreview = new Image { Stretch = Stretch.Uniform };
             Grid.SetRow(image, 1); grid.Children.Add(image);
             Loaded += async (_, _) =>
             {
@@ -63,6 +64,8 @@ internal sealed class ClipboardPreview : UserControl
             box.SetResourceReference(TextBox.ForegroundProperty, "TextPrimary");
             Grid.SetRow(box, 1); grid.Children.Add(box);
         }
-        Content = grid;
+        // Keep our layout inside a single surface. Generic host preview adapters
+        // normalize top-level grids and may otherwise collapse the content row.
+        Content = new Border { Child = grid };
     }
 }
