@@ -4,6 +4,7 @@ using System.Runtime.Loader;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -78,7 +79,7 @@ internal static class RenderUi
                 demo.ContentHostControl.HorizontalContentAlignment = HorizontalAlignment.Stretch;
                 demo.ContentHostControl.VerticalContentAlignment = VerticalAlignment.Stretch;
                 demo.Closed += (_, _) => { backdrop.Close(); app.Shutdown(); };
-                demo.Show();
+                demo.Show(); panel.Open();
             };
             app.Run(); return;
         }
@@ -96,14 +97,16 @@ internal static class RenderUi
                     window.ContentHostControl.Content = panel;
                     window.ContentHostControl.HorizontalContentAlignment = HorizontalAlignment.Stretch;
                     window.ContentHostControl.VerticalContentAlignment = VerticalAlignment.Stretch;
-                    window.Show(); await Task.Delay(300);
+                    window.Show(); panel.Open(); await Task.Delay(300);
                     var tabs = (StackPanel)panel.FindName("TypeTabs");
                     var list = (ListBox)panel.FindName("HistoryList");
                     var search = (TextBox)panel.FindName("SearchBox");
-                    if (tabs.Children.Count != 7 || list.Items.Count != 7) throw new InvalidOperationException("Type tab or history count mismatch.");
+                    if (tabs.Children.Count != 7 || list.Items.Count != 7 || list.SelectedItems.Count != 0)
+                        throw new InvalidOperationException("Initial tab, history, or selection state mismatch.");
                     var jsonTab = tabs.Children.OfType<RadioButton>().Single(t => (string)t.Tag == "json");
                     jsonTab.IsChecked = true;
-                    if (list.Items.Count != 1 || ((ClipboardRow)list.Items[0]).Record.Category != "json") throw new InvalidOperationException("JSON filter failed.");
+                    if (list.Items.Count != 1 || (list.SelectedItem as ClipboardRow)?.Record.Category != "json")
+                        throw new InvalidOperationException("JSON filter failed.");
                     checks.Add(theme + ": JSON filter and selection");
                     Save(window, Path.Combine(output, "panel-" + theme.ToLowerInvariant() + "-json.png"));
                     var allTab = tabs.Children.OfType<RadioButton>().Single(t => (string)t.Tag == "all"); allTab.IsChecked = true;
@@ -156,7 +159,7 @@ internal static class RenderUi
                     await WaitFor(() => fileView.Current?.Path == textFile && fileView.Current.Kind == "text");
                     checks.Add(theme + ": rapid file switching ignores stale loads");
                     allTab.IsChecked = true; search.Text = "发布前"; await Task.Delay(250);
-                    if (list.Items.Count != 1) throw new InvalidOperationException("Search failed.");
+                    if (list.Items.Count != 1 || list.SelectedIndex != 0) throw new InvalidOperationException("Search failed.");
                     ((Button)panel.FindName("CopyButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     if (copies != 1) throw new InvalidOperationException("Copy callback failed.");
                     checks.Add(theme + ": search and copy callback");
@@ -167,6 +170,7 @@ internal static class RenderUi
                     search.Text = ""; await Task.Delay(200); window.Width = 950; window.Height = 620; await Task.Delay(100);
                     Save(window, Path.Combine(output, "panel-" + theme.ToLowerInvariant() + "-small.png"));
                     panel.Dispose(); window.Close();
+                    await CheckPanelSelection(output, theme, checks);
                     await HostPreviewChecks.Run(host, output, theme, checks);
                 }
                 File.WriteAllText(Path.Combine(output, "ui-checks.json"), JsonSerializer.Serialize(checks, new JsonSerializerOptions { WriteIndented = true }));
@@ -176,6 +180,116 @@ internal static class RenderUi
         };
         app.Run();
     }
+
+    private static async Task CheckPanelSelection(string output, string theme, List<string> checks)
+    {
+        var store = new HistoryStore(Path.Combine(output, "selection-" + theme));
+        var now = DateTimeOffset.UtcNow;
+        for (var i = 0; i < 40; i++)
+            store.Add(ClipRecord.FromText($"搜索示例 {i:00}\n第一行\r\n第二行") with { CopiedAt = now.AddMinutes(-i) }, new());
+        var files = new ClipRecord { Kind = ClipKind.Files, Category = "files", Hash = "test-files", CopiedAt = now.AddMinutes(1) };
+        store.Add(files, new());
+        var pastes = new List<IReadOnlyList<ClipRecord>>();
+        var copies = 0;
+        var deletes = 0;
+        var window = ClipboardPanel.CreateWindow();
+        using var panel = new ClipboardPanel(store, pastes.Add, _ => copies++, _ => deletes++, () => { }, () => { }, window.Hide);
+        window.ContentHostControl.Content = panel;
+        try
+        {
+            window.Show(); panel.Open();
+            var list = (ListBox)panel.FindName("HistoryList");
+            var search = (TextBox)panel.FindName("SearchBox");
+            var tabs = (StackPanel)panel.FindName("TypeTabs");
+            var preview = (ContentControl)panel.FindName("PreviewHost");
+            var pasteButton = (Button)panel.FindName("PasteButton");
+            var source = PresentationSource.FromVisual(window);
+            void Enter() => panel.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, Key.Enter)
+                { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            void Click(int index, int count = 1, ModifierKeys modifier = ModifierKeys.None) =>
+                panel.HandleRowClick((ClipboardRow)list.Items[index], count, modifier);
+            void RoutedClick(int index, MouseButton button)
+            {
+                var row = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(index);
+                var click = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, button)
+                    { RoutedEvent = Mouse.PreviewMouseDownEvent };
+                row.RaiseEvent(click);
+                if (!click.Handled) throw new InvalidOperationException("Panel did not handle the list row's routed click.");
+            }
+            Enter();
+            if (list.SelectedItems.Count != 0 || pastes.Count != 0) throw new InvalidOperationException("First open selected or pasted a record.");
+
+            search.Text = "搜索示例";
+            var textTab = tabs.Children.OfType<RadioButton>().Single(t => (string)t.Tag == "text");
+            textTab.IsChecked = true;
+            await WaitFor(() => list.Items.Count == 40);
+            Click(8); Click(2, modifier: ModifierKeys.Shift);
+            Click(4, modifier: ModifierKeys.Control);
+            if (list.SelectedItems.Count != 2 || preview.Content is not TextBlock || pasteButton.IsEnabled)
+                throw new InvalidOperationException("Shift selection is not sparse or single-record controls stayed enabled.");
+            Enter();
+            ((Button)panel.FindName("CopyButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ((Button)panel.FindName("DeleteButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (pastes.Count + copies + deletes != 0) throw new InvalidOperationException("A single-record action acted on the multi-selection.");
+            panel.Reload();
+            var first = ((ClipboardRow)list.Items[2]).Record;
+            var second = ((ClipboardRow)list.Items[8]).Record;
+            list.ScrollIntoView(list.Items[8]);
+            await WaitFor(() => list.ItemContainerGenerator.ContainerFromIndex(8) is ListBoxItem);
+            RoutedClick(8, MouseButton.Right);
+            if (list.SelectedItems.Count != 2) throw new InvalidOperationException("Right-click narrowed the selection.");
+            RoutedClick(8, MouseButton.Left);
+            if (list.SelectedItems.Count != 2) throw new InvalidOperationException("Double-click's first press narrowed the selection.");
+            Click(8, 2); Click(8, 3);
+            if (pastes.Count != 1 || !pastes[0].SequenceEqual(new[] { first, second }))
+                throw new InvalidOperationException("Selected record count or paste order mismatch.");
+            checks.Add(theme + ": sparse reverse-order Shift selection, refresh, and one ordered paste request");
+
+            Click(2);
+            await WaitFor(() => list.SelectedItems.Count == 1);
+            if (((ClipboardRow)list.SelectedItem).Record.Id != first.Id) throw new InvalidOperationException("Single click did not narrow the selection.");
+            Click(2); Click(2, 2);
+            if (pastes.Count != 2 || pastes[1].Single().Id != first.Id) throw new InvalidOperationException("Single-row double-click failed.");
+            Click(39);
+            list.ScrollIntoView(list.Items[39]);
+            var scroll = VisualDescendants(list).OfType<ScrollViewer>().First();
+            await WaitFor(() => scroll.VerticalOffset > 0);
+            window.Hide(); window.Show(); panel.Open();
+            await WaitFor(() => scroll.VerticalOffset == 0);
+            Enter();
+            if (!textTab.IsChecked.GetValueOrDefault() || search.Text != "搜索示例" || list.Items.Count != 40 ||
+                list.SelectedItems.Count != 0 || pastes.Count != 2)
+                throw new InvalidOperationException("Reopen lost the filter or retained a selection.");
+            using (var recreated = new ClipboardPanel(store, pastes.Add, _ => { }, _ => { }, () => { }, () => { }, () => { }))
+            {
+                recreated.RestoreFilter(panel.Filter);
+                recreated.Open();
+                var restoredList = (ListBox)recreated.FindName("HistoryList");
+                if (recreated.Filter != ("搜索示例", "text") || restoredList.Items.Count != 40 || restoredList.SelectedItems.Count != 0)
+                    throw new InvalidOperationException("Recreated window lost the previous panel's filter or preselected a row.");
+            }
+            checks.Add(theme + ": reopen preserves filters, scrolls to the top, and leaves Enter idle");
+
+            search.Clear();
+            tabs.Children.OfType<RadioButton>().Single(t => (string)t.Tag == "all").IsChecked = true;
+            Click(3); Click(0, modifier: ModifierKeys.Shift); Click(0); Click(0, 2);
+            if (list.SelectedItems.Count != 2 || pastes.Count != 3 || pastes[2].Count != 2 || pastes[2][0].Id != files.Id)
+                throw new InvalidOperationException("File and text were not selected and handed off together in list order.");
+            checks.Add(theme + ": single-click narrowing, single text paste, and a mixed file and text paste request");
+        }
+        finally { window.Close(); }
+    }
+
+    private static IEnumerable<DependencyObject> VisualDescendants(DependencyObject element)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+        {
+            var child = VisualTreeHelper.GetChild(element, i);
+            yield return child;
+            foreach (var descendant in VisualDescendants(child)) yield return descendant;
+        }
+    }
+
     private static async Task WaitFor(Func<bool> ready)
     {
         for (var attempt = 0; attempt < 100; attempt++) { if (ready()) return; await Task.Delay(30); }

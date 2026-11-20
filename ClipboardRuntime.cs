@@ -29,11 +29,15 @@ internal sealed class ClipboardRuntime
     private volatile HistoryStore? _store;
     private Dispatcher? _dispatcher;
     private HwndSource? _window;
+    private PanelPasteClipboard? _panelClipboard;
     private PluginWindow? _panelWindow;
     private ClipboardPanel? _panel;
+    private (string Search, string Category) _panelFilter = ("", "all");
     private IntPtr _foregroundHook;
     private Native.WinEventProc? _foregroundCallback;
     private IntPtr _target;
+    private IntPtr _panelPasteTarget;
+    private bool _panelPasteFocusLost;
     private uint _seenSequence, _selfSequence;
     private DispatcherTimer? _retryTimer;
     private int _readAttempts;
@@ -147,10 +151,15 @@ internal sealed class ClipboardRuntime
             _dispatcher = Dispatcher.CurrentDispatcher;
             _window = new HwndSource(new HwndSourceParameters("LertaroClipboardListener")
             { ParentWindow = new IntPtr(-3), Width = 0, Height = 0, WindowStyle = 0 });
+            _panelClipboard = new PanelPasteClipboard(_window.Handle);
             _window.AddHook(WindowProc);
             if (!Native.AddClipboardFormatListener(_window.Handle)) throw new InvalidOperationException("注册剪贴板监听失败。");
             _seenSequence = Native.GetClipboardSequenceNumber();
-            _foregroundCallback = (_, _, hwnd, _, _, _, _) => { if (Native.ExternalWindow(hwnd)) _target = hwnd; };
+            _foregroundCallback = (_, _, hwnd, _, _, _, _) =>
+            {
+                if (Native.ExternalWindow(hwnd)) _target = hwnd;
+                if (_panelPasteTarget != IntPtr.Zero && hwnd != _panelPasteTarget) _panelPasteFocusLost = true;
+            };
             _foregroundHook = Native.SetWinEventHook(3, 3, IntPtr.Zero, _foregroundCallback, 0, 0, 0);
             if (_foregroundHook == IntPtr.Zero) throw new InvalidOperationException("注册前台窗口跟踪失败。");
             var current = Native.GetForegroundWindow();
@@ -176,6 +185,7 @@ internal sealed class ClipboardRuntime
 
     private IntPtr WindowProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (_panelClipboard?.HandleMessage(msg, wParam) == true) { handled = true; return IntPtr.Zero; }
         if (msg == 0x031D && !_stopping && !_monitorStopping) { _readAttempts = 0; Capture(); }
         if (msg == 0x0312 && !_stopping && !_monitorStopping && Enabled())
         {
@@ -212,7 +222,8 @@ internal sealed class ClipboardRuntime
     {
         _retryTimer?.Stop();
         var seq = Native.GetClipboardSequenceNumber();
-        if (_stopping || _monitorStopping || !Enabled() || seq == _seenSequence || seq == _selfSequence) { _seenSequence = seq; return; }
+        if (_stopping || _monitorStopping || !Enabled() || seq == _seenSequence || seq == _selfSequence ||
+            _window is { } own && Native.GetClipboardOwner() == own.Handle) { _seenSequence = seq; return; }
         try
         {
             var owner = Native.GetClipboardOwner();
@@ -285,13 +296,25 @@ internal sealed class ClipboardRuntime
                 if (_panelWindow == null)
                 {
                     _panelWindow = ClipboardPanel.CreateWindow();
-                    _panel = new ClipboardPanel(_store, item => Paste(item), Copy, Delete, ResetSequence, ClipboardMenu.ConfirmClear, _panelWindow.Hide);
+                    _panel = new ClipboardPanel(_store, ordered => PastePanelSelection(ordered), Copy, Delete, ResetSequence, ClipboardMenu.ConfirmClear, _panelWindow.Hide);
+                    _panel.RestoreFilter(_panelFilter);
                     _panelWindow.ContentHostControl.Content = _panel;
                     _panelWindow.ContentHostControl.HorizontalContentAlignment = HorizontalAlignment.Stretch;
                     _panelWindow.ContentHostControl.VerticalContentAlignment = VerticalAlignment.Stretch;
-                    _panelWindow.Closed += (_, _) => { _panel?.Dispose(); _panel = null; _panelWindow = null; };
+                    _panelWindow.Closed += (_, _) =>
+                    {
+                        if (_panel is { } panel)
+                        {
+                            _panelFilter = panel.Filter;
+                            panel.Dispose();
+                        }
+                        _panel = null;
+                        _panelWindow = null;
+                    };
                 }
-                _panelWindow.Show(); _panelWindow.Activate(); _panel?.Reload(); _panel?.FocusSearch();
+                var reopening = !_panelWindow.IsVisible;
+                _panelWindow.Show(); _panelWindow.Activate();
+                if (reopening) _panel?.Open(); else _panel?.Reload();
             }
             catch (Exception ex) { Notify("剪贴板面板未能打开", ex.Message); SearchWindowService.ShowWindow(Keyword + " "); }
         });
@@ -330,6 +353,92 @@ internal sealed class ClipboardRuntime
         finally { _busy = false; }
         });
     }
+
+    internal void PastePanelSelection(IReadOnlyList<ClipRecord> ordered, IntPtr? destination = null)
+    {
+        var selection = ordered.ToArray();
+        var target = destination ?? Destination();
+        var targetThread = Native.GetWindowThreadProcessId(target, out var targetProcess);
+        var sequence = Native.GetClipboardSequenceNumber();
+        PostOperation(async () =>
+        {
+            if (_busy || selection.Length == 0) return;
+            _busy = true;
+            try { await PastePanelSelectionAsync(selection, target, targetThread, targetProcess, sequence); }
+            catch (Exception ex) { Notify("粘贴已停止", ex.Message); }
+            finally { _panelClipboard?.EndWait(); _panelPasteTarget = IntPtr.Zero; _busy = false; }
+        });
+    }
+
+    private async Task PastePanelSelectionAsync(ClipRecord[] selection, IntPtr target, uint targetThread, uint targetProcess, uint sequence)
+    {
+        var store = _store!;
+        var segments = await Task.Run(() => PanelPastePlan.Build(selection,
+            record => PanelPasteImages.Resolve(store, record, stage: selection.Length > 1), PanelPastePlan.PathExists));
+        if (segments.Length == 0) return;
+        if (segments[0].Kind == ClipKind.Image)
+        {
+            try { await PasteAsync(segments[0], target, targetProcess, clipboardSequence: sequence); }
+            catch (Exception ex) when (PanelPasteImages.IsMissingOrInvalid(ex)) { }
+            return;
+        }
+
+        await ActivatePasteTarget(target, targetThread, targetProcess);
+        _panelPasteFocusLost = false;
+        _panelPasteTarget = target;
+        var clipboard = _panelClipboard!;
+        uint? expectedSequence = sequence;
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var segment = segments[index];
+            if (segment.Kind == ClipKind.Files)
+            {
+                var live = segment.Files.Where(PanelPastePlan.PathExists).ToArray();
+                if (live.Length == 0) continue;
+                segment = segment with { Files = live };
+            }
+            var intermediate = index + 1 < segments.Length;
+            var entry = PanelPasteClipboard.Prepare(segment, targetProcess);
+            for (var attempt = 0; ; attempt++)
+            {
+                VerifyPanelPasteTarget(target, targetThread, targetProcess);
+                if (clipboard.TryWrite(entry, expectedSequence, intermediate,
+                    () => VerifyPanelPasteTarget(target, targetThread, targetProcess))) break;
+                if (attempt == 20) throw new IOException("剪贴板正被占用，停止粘贴剩余内容。");
+                await Task.Delay(35);
+            }
+            VerifyPanelPasteTarget(target, targetThread, targetProcess);
+            if (Native.GetClipboardOwner() != ListenerHandle)
+                throw new InvalidOperationException("剪贴板已变化，停止发送粘贴。");
+            entry.InputSent = true;
+            Native.PasteKeys();
+            if (!intermediate) return;
+
+            var deadline = Environment.TickCount64 + 3500;
+            for (;;)
+            {
+                VerifyPanelPasteTarget(target, targetThread, targetProcess, checkModifiers: false);
+                if (Native.GetClipboardOwner() != ListenerHandle)
+                    throw new InvalidOperationException("剪贴板已变化，停止粘贴剩余内容。");
+                if (entry.RenderError is { } error) throw error;
+                if (entry.Requested) break;
+                if (Environment.TickCount64 >= deadline)
+                    throw new TimeoutException("未检测到目标读取当前段，停止粘贴剩余内容。");
+                await Task.Delay(25);
+            }
+            expectedSequence = null;
+        }
+    }
+
+    private void VerifyPanelPasteTarget(IntPtr target, uint thread, uint process, bool checkModifiers = true)
+    {
+        if (_stopping || _monitorStopping || !Enabled()) throw new InvalidOperationException("插件已停止，停止粘贴剩余内容。");
+        if (_panelPasteFocusLost || Native.GetForegroundWindow() != target ||
+            Native.GetWindowThreadProcessId(target, out var currentProcess) != thread || currentProcess != process)
+            throw new InvalidOperationException("目标窗口或焦点已变化，停止粘贴剩余内容。");
+        if (checkModifiers && Native.ModifiersDown()) throw new InvalidOperationException("检测到修饰键按下，停止粘贴剩余内容。");
+    }
+
     private async Task PasteNextAsync()
     {
         if (_busy) return;
@@ -378,15 +487,50 @@ internal sealed class ClipboardRuntime
         }
     }
 
-    private async Task PasteAsync(ClipRecord item, IntPtr target, uint expectedPid, long? generation = null)
+    private async Task PasteAsync(ClipRecord item, IntPtr target, uint expectedPid, long? generation = null, uint? clipboardSequence = null)
     {
         var current = Native.GetForegroundWindow();
         Logger.Log($"[Clipboard] Paste start target={target}, current={current}", LogLevel.Debug);
+        var targetThread = Native.GetWindowThreadProcessId(target, out _);
+        await ActivatePasteTarget(target, targetThread, expectedPid);
+        Action? verifyClipboard = null;
+        if (clipboardSequence is { } sequence)
+        {
+            _panelPasteFocusLost = false;
+            _panelPasteTarget = target;
+            verifyClipboard = () =>
+            {
+                VerifyPanelPasteTarget(target, targetThread, expectedPid);
+                if (Native.GetClipboardSequenceNumber() != sequence)
+                    throw new InvalidOperationException("剪贴板已变化，停止粘贴。");
+            };
+        }
+        await WriteAsync(item, verifyClipboard);
+        Logger.Log("[Clipboard] Clipboard restored", LogLevel.Debug);
+        if (clipboardSequence.HasValue)
+        {
+            VerifyPanelPasteTarget(target, targetThread, expectedPid);
+            if (Native.GetClipboardSequenceNumber() != _selfSequence)
+                throw new InvalidOperationException("剪贴板已变化，停止发送粘贴。");
+        }
+        if (Native.GetForegroundWindow() != target) throw new InvalidOperationException("焦点发生变化，内容已复制但未发送粘贴。");
+        lock (_gate)
+        {
+            if (generation.HasValue && generation != _sequenceGeneration)
+                throw new OperationCanceledException("顺序队列已清空或重置，已取消本次粘贴。");
+            Native.PasteKeys();
+        }
+        Logger.Log("[Clipboard] Paste input submitted", LogLevel.Debug);
+    }
+
+    private async Task ActivatePasteTarget(IntPtr target, uint targetThread, uint expectedPid)
+    {
+        var current = Native.GetForegroundWindow();
         if (!Native.ExternalWindow(target)) throw new InvalidOperationException("目标窗口已关闭，请重新选择目标应用。");
         if (Native.ExternalWindow(current) && current != target)
             throw new InvalidOperationException("前台应用已改变，已停止粘贴。");
-        var targetThread = Native.GetWindowThreadProcessId(target, out var targetPid);
-        if (targetPid != expectedPid) throw new InvalidOperationException("目标窗口已被其他进程替换。");
+        if (Native.GetWindowThreadProcessId(target, out var targetPid) != targetThread || targetPid != expectedPid)
+            throw new InvalidOperationException("目标窗口已被替换。");
         await Application.Current.Dispatcher.InvokeAsync(SearchWindowService.HideWindow);
         await Application.Current.Dispatcher.InvokeAsync(() => _panelWindow?.Hide());
         Logger.Log("[Clipboard] Host hidden", LogLevel.Debug);
@@ -397,18 +541,8 @@ internal sealed class ClipboardRuntime
         if (Native.GetForegroundWindow() != target) throw new InvalidOperationException("未能恢复目标焦点，已停止粘贴。");
         if (Native.GetWindowThreadProcessId(target, out var checkPid) != targetThread || checkPid != targetPid)
             throw new InvalidOperationException("目标窗口已变化。");
-        await WriteAsync(item);
-        Logger.Log("[Clipboard] Clipboard restored", LogLevel.Debug);
-        if (Native.GetForegroundWindow() != target) throw new InvalidOperationException("焦点发生变化，内容已复制但未发送粘贴。");
-        lock (_gate)
-        {
-            if (generation.HasValue && generation != _sequenceGeneration)
-                throw new OperationCanceledException("顺序队列已清空或重置，已取消本次粘贴。");
-            Native.PasteKeys();
-        }
-        Logger.Log("[Clipboard] Paste input submitted", LogLevel.Debug);
     }
-    private async Task WriteAsync(ClipRecord item)
+    private async Task WriteAsync(ClipRecord item, Action? verifyClipboard = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -433,6 +567,7 @@ internal sealed class ClipboardRuntime
                         var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad;
                         using (var input = new MemoryStream(png)) { bitmap.StreamSource = input; bitmap.EndInit(); } bitmap.Freeze();
                         var data = new DataObject(); data.SetImage(bitmap); data.SetData("PNG", new MemoryStream(png));
+                        verifyClipboard?.Invoke();
                         WinClipboard.SetDataObject(data, true); _selfSequence = Native.GetClipboardSequenceNumber();
                         if (!WinClipboard.ContainsImage()) throw new IOException("图片写入未能确认。");
                         break;
@@ -449,6 +584,7 @@ internal sealed class ClipboardRuntime
         "历史已清空", "历史记录、顺序队列和缓存图片已清空。");
     internal Task ClearAsync() => EnqueueWork(() =>
     {
+        PanelPasteImages.Clear(_store!);
         _store!.Clear();
         lock (_gate) { _sequence.Reset(); _sequenceGeneration++; }
         Persist(); RefreshSearch();
@@ -551,7 +687,7 @@ internal sealed class ClipboardRuntime
         if (_window != null)
         {
             Native.UnregisterHotKey(_window.Handle, 1); Native.UnregisterHotKey(_window.Handle, 2);
-            Native.RemoveClipboardFormatListener(_window.Handle); _window.Dispose(); _window = null;
+            Native.RemoveClipboardFormatListener(_window.Handle); _window.Dispose(); _window = null; _panelClipboard = null;
         }
     }
     private void ShutdownMonitor()

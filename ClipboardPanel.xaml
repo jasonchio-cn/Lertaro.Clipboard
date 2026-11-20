@@ -55,7 +55,6 @@
      </Trigger>
     </ControlTemplate.Triggers>
    </ControlTemplate></Setter.Value></Setter>
-   <EventSetter Event="PreviewMouseRightButtonDown" Handler="SelectRightClickedRow"/>
   </Style>
   <DataTemplate DataType="{x:Type local:ClipboardRow}">
    <Grid>
@@ -109,7 +108,9 @@
     <ListBox x:Name="HistoryList" Grid.Row="1" Background="Transparent" BorderThickness="0" Padding="0,0,3,0"
        ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
        VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
-       SelectionChanged="SelectionChanged" MouseDoubleClick="PasteDoubleClick" ContextMenuOpening="OpenRowMenu" AutomationProperties.Name="剪贴板历史记录"/>
+       SelectionMode="Multiple" SelectionChanged="SelectionChanged"
+       PreviewMouseLeftButtonDown="ClickRow" PreviewMouseRightButtonDown="SelectRightClickedRow"
+       ContextMenuOpening="OpenRowMenu" AutomationProperties.Name="剪贴板历史记录"/>
     <StackPanel x:Name="EmptyList" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
      <TextBlock Text="&#xE8A5;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="32" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Center" Margin="0,0,0,14"/>
      <TextBlock Text="没有匹配的记录" HorizontalAlignment="Center"/>
