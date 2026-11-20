@@ -12,6 +12,8 @@ public sealed record ClipRecord
     public ClipKind Kind { get; init; }
     public string Category { get; init; } = "text";
     public string Text { get; init; } = "";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public byte[]? Biff12 { get; init; }
     public string[] Files { get; init; } = [];
     public string ImageFile { get; init; } = "";
     public string Hash { get; init; } = "";

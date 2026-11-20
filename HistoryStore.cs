@@ -27,6 +27,8 @@ public sealed class HistoryStore
     private static bool Valid(ClipRecord x) => x != null && Guid.TryParseExact(x.Id, "N", out _) &&
         Enum.IsDefined(x.Kind) && x.Text != null && x.Files != null && x.Files.All(f => !string.IsNullOrWhiteSpace(f)) &&
         x.Bytes >= 0 && !string.IsNullOrEmpty(x.Hash) &&
+        (x.Biff12 == null || (x.Kind == ClipKind.Text && x.Biff12.Length > 0 &&
+            x.Bytes == x.Biff12.LongLength + System.Text.Encoding.UTF8.GetByteCount(x.Text))) &&
         (x.Kind != ClipKind.Image || (x.ImageFile == x.Hash.Split(':').Last() + ".png" &&
             x.ImageFile.Length == 68 && x.ImageFile[..64].All(Uri.IsHexDigit)));
 

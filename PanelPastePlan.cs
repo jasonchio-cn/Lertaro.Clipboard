@@ -6,6 +6,7 @@ internal static class PanelPastePlan
 {
     internal static ClipRecord[] Build(IReadOnlyList<ClipRecord> ordered, Func<ClipRecord, string?> resolveImage, Func<string, bool> exists)
     {
+        if (ordered.Count == 1 && ordered[0].Biff12 != null) return [ordered[0]];
         var segments = new List<ClipRecord>();
         var text = new List<string>();
         var files = new List<string>();

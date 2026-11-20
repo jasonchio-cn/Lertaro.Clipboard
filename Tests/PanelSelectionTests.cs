@@ -13,6 +13,17 @@ namespace Clipboard.Tests;
 public class PanelSelectionTests
 {
     [TestMethod]
+    public void SingleCellsKeepBiff12WhileMultipleSelectionsUseDisplayText()
+    {
+        var cells = SpreadsheetClipboard.WithBiff12(ClipRecord.FromText("3"), [0, 255]);
+        var plain = ClipRecord.FromText("end");
+        Assert.AreSame(cells, PanelPastePlan.Build([cells], _ => null, _ => false).Single());
+        var combined = PanelPastePlan.Build([cells, plain], _ => null, _ => false).Single();
+        Assert.IsNull(combined.Biff12);
+        Assert.AreEqual("3\r\nend", combined.Text);
+    }
+
+    [TestMethod]
     public void PlanGroupsAdjacentFormatsAfterDroppingInvalidPaths()
     {
         var first = ClipRecord.FromText("alpha\none\r\n");

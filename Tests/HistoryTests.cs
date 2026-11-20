@@ -27,6 +27,28 @@ public class HistoryTests
         Assert.AreEqual(2, store.Snapshot().Length); Assert.AreEqual(a.Id, again.Id);
         Assert.AreEqual("A", store.Snapshot()[0].Text);
     }
+
+    [TestMethod] public void Biff12RoundTripKeepsRecordsWithIdenticalDisplayValuesDistinct()
+    {
+        var store = new HistoryStore(_root);
+        var plain = ClipRecord.FromText("3\r\n");
+        byte[] first = [0, 1, 255, 0], second = [1, 2, 0];
+        var cells = SpreadsheetClipboard.WithBiff12(ClipRecord.FromText(plain.Text), first);
+        store.Add(plain, new());
+        var saved = store.Add(cells, new());
+        store.Add(SpreadsheetClipboard.WithBiff12(ClipRecord.FromText(plain.Text), second), new());
+        Assert.AreEqual(saved.Id, store.Add(SpreadsheetClipboard.WithBiff12(ClipRecord.FromText(plain.Text), first), new()).Id);
+        store.Save([]);
+        var rows = new HistoryStore(_root).Snapshot();
+        Assert.AreEqual(3, rows.Length);
+        var restored = rows.Single(x => x.Id == saved.Id);
+        Assert.AreEqual(plain.Bytes + first.Length, restored.Bytes);
+        CollectionAssert.AreEqual(first, restored.Biff12);
+        var data = SpreadsheetClipboard.ForPaste(restored);
+        CollectionAssert.AreEquivalent(new[] { "Biff12", "UnicodeText" }, data.GetFormats(false));
+        Assert.AreEqual(plain.Text, data.GetText());
+        CollectionAssert.AreEqual(first, ((MemoryStream)data.GetData("Biff12", false)!).ToArray());
+    }
     [TestMethod] public void RetentionDropsOldestByCountAndAge()
     {
         var store = new HistoryStore(_root);

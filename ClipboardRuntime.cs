@@ -228,11 +228,11 @@ internal sealed class ClipboardRuntime
         {
             var owner = Native.GetClipboardOwner();
             var source = Native.SourceName(owner != IntPtr.Zero ? owner : Native.GetForegroundWindow());
-            var record = ReadClipboard(source, out var png);
+            var limits = Limits;
+            var record = ReadClipboard(source, limits, out var png);
             if (Native.GetClipboardSequenceNumber() != seq) { RetryCapture(); return; }
             _seenSequence = seq;
             if (record == null) return;
-            var limits = Limits;
             if (record.Bytes > limits.MaxItemBytes) { Notify("内容未记录", $"单条超过 {limits.MaxItemBytes / 1024 / 1024} MB 上限。"); return; }
             QueueWork(() =>
             {
@@ -247,7 +247,7 @@ internal sealed class ClipboardRuntime
     }
     private void RetryCapture() { if (++_readAttempts <= 8) _retryTimer?.Start(); }
 
-    private ClipRecord? ReadClipboard(string source, out byte[]? png)
+    private ClipRecord? ReadClipboard(string source, ClipLimits limits, out byte[]? png)
     {
         png = null;
         // FileDrop wins over its accompanying path text; useful text wins over Office's rendered image.
@@ -259,10 +259,13 @@ internal sealed class ClipboardRuntime
             return new ClipRecord { Kind = ClipKind.Files, Category = "files", Files = files, Bytes = bytes.Length,
                 Hash = ClipRecord.Fingerprint(ClipKind.Files, bytes), Source = source };
         }
-        if (WinClipboard.ContainsText())
+        var hasCells = SpreadsheetClipboard.IsAvailable();
+        if (hasCells || WinClipboard.ContainsText())
         {
             var text = WinClipboard.GetText();
-            if (text.Length > 0) return ClipRecord.FromText(text, source);
+            var item = ClipRecord.FromText(text, source);
+            if (hasCells) item = SpreadsheetClipboard.Capture(item, limits.MaxItemBytes);
+            if (text.Length > 0 || item.Biff12 != null) return item;
         }
         if (!WinClipboard.ContainsImage()) return null;
         BitmapSource? image = null;
@@ -376,10 +379,10 @@ internal sealed class ClipboardRuntime
         var segments = await Task.Run(() => PanelPastePlan.Build(selection,
             record => PanelPasteImages.Resolve(store, record, stage: selection.Length > 1), PanelPastePlan.PathExists));
         if (segments.Length == 0) return;
-        if (segments[0].Kind == ClipKind.Image)
+        if (segments[0].Kind == ClipKind.Image || segments[0].Biff12 != null)
         {
             try { await PasteAsync(segments[0], target, targetProcess, clipboardSequence: sequence); }
-            catch (Exception ex) when (PanelPasteImages.IsMissingOrInvalid(ex)) { }
+            catch (Exception ex) when (segments[0].Kind == ClipKind.Image && PanelPasteImages.IsMissingOrInvalid(ex)) { }
             return;
         }
 
@@ -552,7 +555,10 @@ internal sealed class ClipboardRuntime
                 switch (item.Kind)
                 {
                     case ClipKind.Text:
-                        WinClipboard.SetText(item.Text);
+                        verifyClipboard?.Invoke();
+                        if (item.Biff12 != null)
+                            WinClipboard.SetDataObject(SpreadsheetClipboard.ForPaste(item), true);
+                        else WinClipboard.SetText(item.Text);
                         _selfSequence = Native.GetClipboardSequenceNumber();
                         if (WinClipboard.GetText() != item.Text) throw new IOException("文本写入未能确认。");
                         break;
