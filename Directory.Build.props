@@ -13,8 +13,8 @@
     <GetAssemblyIdentity AssemblyFiles="$(LertaroDir)\Lertaro.PluginSdk.dll">
       <Output TaskParameter="Assemblies" ItemName="_LertaroSdkIdentity" />
     </GetAssemblyIdentity>
-    <Error Condition="'%(_LertaroSdkIdentity.Version)' != '2.3.0.0'"
-           Text="This version targets Lertaro 5.10.0 / Plugin SDK 2.3.0. Supply the matching SDK." />
+    <Error Condition="'%(_LertaroSdkIdentity.Version)' != '2.7.4.0'"
+           Text="This version targets Lertaro 5.13.5 / Plugin SDK 2.7.4. Supply the matching SDK." />
   </Target>
   <Target Name="ValidateResolvedLertaroSdk" AfterTargets="ResolveAssemblyReferences">
     <ItemGroup>

@@ -97,7 +97,7 @@ public class RuntimeTests
     public void CompiledPluginReferencesTheDeclaredSdkVersion()
     {
         var reference = typeof(ClipboardPlugin).Assembly.GetReferencedAssemblies().Single(x => x.Name == "Lertaro.PluginSdk");
-        Assert.AreEqual(new Version(2, 3, 0, 0), reference.Version);
+        Assert.AreEqual(new Version(2, 7, 4, 0), reference.Version);
         Assert.AreEqual(reference.Version, typeof(TranslationService).Assembly.GetName().Version);
     }
 }
